@@ -65,12 +65,12 @@ class OpenIdConnectClient @Inject() (rpc: RPC, conf: WkConf)(implicit ec: Execut
 
   /*
   Fetches token from the oidc provider (https://openid.net/specs/openid-connect-core-1_0.html#TokenRequest),
-  fields described by https://www.rfc-editor.org/rfc/rfc6749#section-4.4.2
-  Note that some providers will also reply with an id token next to the auth token, which is also returned as an option.
+  validates the returned tokens (signature verification via the OP's jwks),
+  then fetches the user profile from the /userinfo endpoint (which is the
+  canonical source for OIDC claims — some OPs, e.g. Okta's Org Authorization
+  Server, omit profile claims from the id_token by default).
    */
-  def getAndValidateTokens(redirectUrl: String,
-                           code: String,
-                           codeVerifier: String): Fox[(JsObject, Option[JsObject])] =
+  def getAndValidateTokens(redirectUrl: String, code: String, codeVerifier: String): Fox[OpenIdConnectUserInfo] =
     for {
       _ <- Fox.fromBool(conf.Features.openIdConnectEnabled) ?~> Msg.Oidc.notEnabled
       _ <- Fox.fromBool(oidcConfig.isValid) ?~> Msg.Oidc.configurationInvalid
@@ -90,9 +90,23 @@ class OpenIdConnectClient @Inject() (rpc: RPC, conf: WkConf)(implicit ec: Execut
       _ = logDebug(
         s"Fetched oidc token for scope '${oidcConfig.scope}', response scope: ${tokenResponse.scope}. Decoding..."
       )
-      (accessToken, idToken) <- validateOpenIdConnectTokenResponse(tokenResponse, serverInfos) ?~> "failed to parse JWT"
-      _ = logDebug(s"Got id token $idToken and access token $accessToken.")
-    } yield (accessToken, idToken)
+      _ <- validateOpenIdConnectTokenResponse(tokenResponse, serverInfos) ?~> "failed to parse JWT"
+      userInfo <- fetchUserInfo(serverInfos, tokenResponse.access_token)
+      _ = logDebug(s"Got user info from /userinfo for ${userInfo.email}.")
+    } yield userInfo
+
+  private def fetchUserInfo(
+      serverInfos: OpenIdConnectProviderInfo,
+      accessToken: String
+  ): Fox[OpenIdConnectUserInfo] =
+    for {
+      response: WSResponse <- rpc(serverInfos.userinfo_endpoint)
+        .silentIf(!conf.SingleSignOn.OpenIdConnect.verboseLoggingEnabled)
+        .addHttpHeader("Authorization", s"Bearer $accessToken")
+        .get
+      userInfo <- JsonHelper.as[OpenIdConnectUserInfo](response.json).toFox ?~>
+        "Failed to parse /userinfo response — required claims (given_name, family_name, email) missing"
+    } yield userInfo
 
   /*
   Discover endpoints of the provider (https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderConfig)
