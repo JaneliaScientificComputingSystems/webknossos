@@ -34,13 +34,16 @@ class OpenIdConnectClient @Inject() (rpc: RPC, conf: WkConf)(implicit ec: Execut
 
   /*
    Build redirect URL to redirect to OIDC provider for auth request (https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest)
-   Returns (authorization URL, PKCE code_verifier). The caller is responsible for
-   carrying the verifier across the redirect (e.g. via a short-lived cookie) and
-   passing it back to getAndValidateTokens.
+   Returns (authorization URL, PKCE code_verifier, opaque state token). The
+   caller is responsible for carrying the verifier and state across the
+   redirect (e.g. via short-lived cookies), passing the verifier back to
+   getAndValidateTokens, and verifying that the state echoed by the OP
+   matches the one originally sent (CSRF defense).
    */
-  def getRedirectUrl(callbackUrl: String): Fox[(String, String)] = {
+  def getRedirectUrl(callbackUrl: String): Fox[(String, String, String)] = {
     val codeVerifier = newPkceCodeVerifier()
     val codeChallenge = pkceCodeChallenge(codeVerifier)
+    val state = newRandomState()
     for {
       _ <- Fox.fromBool(conf.Features.openIdConnectEnabled) ?~> Msg.Oidc.notEnabled
       _ <- Fox.fromBool(oidcConfig.isValid) ?~> Msg.Oidc.configurationInvalid
@@ -51,12 +54,13 @@ class OpenIdConnectClient @Inject() (rpc: RPC, conf: WkConf)(implicit ec: Execut
           "scope" -> oidcConfig.scope,
           "response_type" -> "code",
           "code_challenge" -> codeChallenge,
-          "code_challenge_method" -> "S256"
+          "code_challenge_method" -> "S256",
+          "state" -> state
         )
         serverInfos.authorization_endpoint + "?" +
           queryParams.map(v => v._1 + "=" + URLEncoder.encode(v._2, StandardCharsets.UTF_8.toString)).mkString("&")
       }
-    } yield (redirectUrl, codeVerifier)
+    } yield (redirectUrl, codeVerifier, state)
   }
 
   /*
@@ -149,6 +153,14 @@ class OpenIdConnectClient @Inject() (rpc: RPC, conf: WkConf)(implicit ec: Execut
   private def pkceCodeChallenge(verifier: String): String = {
     val digest = MessageDigest.getInstance("SHA-256").digest(verifier.getBytes(StandardCharsets.UTF_8))
     base64UrlNoPad.encodeToString(digest)
+  }
+
+  // Opaque random state token for CSRF defense. Some OPs (Okta) reject the
+  // authorization request when state is absent.
+  private def newRandomState(): String = {
+    val bytes = new Array[Byte](32)
+    pkceRng.nextBytes(bytes)
+    base64UrlNoPad.encodeToString(bytes)
   }
 }
 
