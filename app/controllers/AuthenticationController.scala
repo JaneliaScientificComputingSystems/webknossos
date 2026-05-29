@@ -793,13 +793,31 @@ class AuthenticationController @Inject()(
 
   private lazy val absoluteOpenIdConnectCallbackURL = s"${conf.Http.uri}/api/auth/oidc/callback"
 
+  // PKCE verifier travels from the authorization request to the token request
+  // (RFC 7636). We stash it in a short-lived HttpOnly cookie scoped to the
+  // OIDC routes. SameSite=Lax so Okta's top-level redirect carries it back.
+  private val oidcVerifierCookieName = "wk_oidc_verifier"
+  private val oidcVerifierCookiePath = "/api/auth/oidc/"
+
   def loginViaOpenIdConnect(): Action[AnyContent] = sil.UserAwareAction.async { _ =>
     if (!isOIDCEnabled) {
       Fox.successful(BadRequest("SSO is not enabled"))
     } else {
       openIdConnectClient
         .getRedirectUrl(absoluteOpenIdConnectCallbackURL)
-        .map(url => Ok(Json.obj("redirect_url" -> url)))
+        .map {
+          case (url, codeVerifier) =>
+            Ok(Json.obj("redirect_url" -> url)).withCookies(
+              Cookie(
+                name = oidcVerifierCookieName,
+                value = codeVerifier,
+                maxAge = Some(600),
+                path = oidcVerifierCookiePath,
+                secure = true,
+                httpOnly = true,
+                sameSite = Some(Cookie.SameSite.Lax)
+              ))
+        }
     }
   }
 
@@ -850,13 +868,16 @@ class AuthenticationController @Inject()(
   def openIdCallback(): Action[AnyContent] = Action.async { implicit request =>
     for {
       _ <- Fox.fromBool(isOIDCEnabled) ?~> "SSO is not enabled"
+      codeVerifier <- request.cookies.get(oidcVerifierCookieName).map(_.value).toFox ?~>
+        "Missing PKCE verifier cookie. Either the session expired or the cookie was blocked. Start the SSO flow again."
       (accessToken: JsObject, idToken: Option[JsObject]) <- openIdConnectClient.getAndValidateTokens(
         absoluteOpenIdConnectCallbackURL,
         request.queryString.get("code").flatMap(_.headOption).getOrElse("missing code"),
+        codeVerifier,
       ) ?~> Msg.Oidc.getTokenFailed ?~> Msg.Oidc.authenticationFailed
       userInfoFromTokens <- extractUserInfoFromTokenResponses(accessToken, idToken)
       userResult <- Fox.fromFuture(loginOrSignupViaOidc(userInfoFromTokens)(request))
-    } yield userResult
+    } yield userResult.discardingCookies(DiscardingCookie(oidcVerifierCookieName, path = oidcVerifierCookiePath))
   }
 
   private def extractUserInfoFromTokenResponses(accessToken: JsObject,

@@ -13,7 +13,7 @@ import java.math.BigInteger
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.security.spec.RSAPublicKeySpec
-import java.security.{KeyFactory, PublicKey}
+import java.security.{KeyFactory, MessageDigest, PublicKey, SecureRandom}
 import java.util.Base64
 import javax.inject.Inject
 import scala.concurrent.ExecutionContext
@@ -35,8 +35,13 @@ class OpenIdConnectClient @Inject()(rpc: RPC, conf: WkConf)(implicit ec: Executi
 
   /*
    Build redirect URL to redirect to OIDC provider for auth request (https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest)
+   Returns (authorization URL, PKCE code_verifier). The caller is responsible for
+   carrying the verifier across the redirect (e.g. via a short-lived cookie) and
+   passing it back to getAndValidateTokens.
    */
-  def getRedirectUrl(callbackUrl: String): Fox[String] =
+  def getRedirectUrl(callbackUrl: String): Fox[(String, String)] = {
+    val codeVerifier = newPkceCodeVerifier()
+    val codeChallenge = pkceCodeChallenge(codeVerifier)
     for {
       _ <- Fox.fromBool(conf.Features.openIdConnectEnabled) ?~> Msg.Oidc.notEnabled
       _ <- Fox.fromBool(oidcConfig.isValid) ?~> Msg.Oidc.configurationInvalid
@@ -46,18 +51,23 @@ class OpenIdConnectClient @Inject()(rpc: RPC, conf: WkConf)(implicit ec: Executi
           "redirect_uri" -> callbackUrl,
           "scope" -> oidcConfig.scope,
           "response_type" -> "code",
+          "code_challenge" -> codeChallenge,
+          "code_challenge_method" -> "S256",
         )
         serverInfos.authorization_endpoint + "?" +
           queryParams.map(v => v._1 + "=" + URLEncoder.encode(v._2, StandardCharsets.UTF_8.toString)).mkString("&")
       }
-    } yield redirectUrl
+    } yield (redirectUrl, codeVerifier)
+  }
 
   /*
   Fetches token from the oidc provider (https://openid.net/specs/openid-connect-core-1_0.html#TokenRequest),
   fields described by https://www.rfc-editor.org/rfc/rfc6749#section-4.4.2
   Note that some providers will also reply with an id token next to the auth token, which is also returned as an option.
    */
-  def getAndValidateTokens(redirectUrl: String, code: String): Fox[(JsObject, Option[JsObject])] =
+  def getAndValidateTokens(redirectUrl: String,
+                           code: String,
+                           codeVerifier: String): Fox[(JsObject, Option[JsObject])] =
     for {
       _ <- Fox.fromBool(conf.Features.openIdConnectEnabled) ?~> Msg.Oidc.notEnabled
       _ <- Fox.fromBool(oidcConfig.isValid) ?~> Msg.Oidc.configurationInvalid
@@ -70,6 +80,7 @@ class OpenIdConnectClient @Inject()(rpc: RPC, conf: WkConf)(implicit ec: Executi
             "grant_type" -> "authorization_code",
             "redirect_uri" -> redirectUrl,
             "code" -> code,
+            "code_verifier" -> codeVerifier,
             "scope" -> oidcConfig.scope
           ))
       _ = logDebug(
@@ -118,6 +129,23 @@ class OpenIdConnectClient @Inject()(rpc: RPC, conf: WkConf)(implicit ec: Executi
 
   private def logDebug(message: String): Unit = if (conf.SingleSignOn.OpenIdConnect.verboseLoggingEnabled) {
     logger.info(message)
+  }
+
+  // PKCE per RFC 7636. 32 random bytes → 43-character base64url-without-padding
+  // verifier (within the spec's 43–128 character range).
+  private val pkceVerifierBytes = 32
+  private val pkceRng = new SecureRandom()
+  private val base64UrlNoPad = Base64.getUrlEncoder.withoutPadding
+
+  private def newPkceCodeVerifier(): String = {
+    val bytes = new Array[Byte](pkceVerifierBytes)
+    pkceRng.nextBytes(bytes)
+    base64UrlNoPad.encodeToString(bytes)
+  }
+
+  private def pkceCodeChallenge(verifier: String): String = {
+    val digest = MessageDigest.getInstance("SHA-256").digest(verifier.getBytes(StandardCharsets.UTF_8))
+    base64UrlNoPad.encodeToString(digest)
   }
 }
 
