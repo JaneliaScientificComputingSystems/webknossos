@@ -793,11 +793,24 @@ class AuthenticationController @Inject()(
 
   private lazy val absoluteOpenIdConnectCallbackURL = s"${conf.Http.uri}/api/auth/oidc/callback"
 
-  // PKCE verifier travels from the authorization request to the token request
-  // (RFC 7636). We stash it in a short-lived HttpOnly cookie scoped to the
-  // OIDC routes. SameSite=Lax so Okta's top-level redirect carries it back.
+  // PKCE verifier + CSRF state travel from the authorization request to the
+  // callback (RFC 7636 + OAuth 2.0 §10.12). Both are stashed in short-lived
+  // HttpOnly cookies scoped to the OIDC routes. SameSite=Lax so Okta's
+  // top-level redirect carries them back.
   private val oidcVerifierCookieName = "wk_oidc_verifier"
+  private val oidcStateCookieName = "wk_oidc_state"
   private val oidcVerifierCookiePath = "/api/auth/oidc/"
+
+  private def oidcFlowCookie(name: String, value: String): Cookie =
+    Cookie(
+      name = name,
+      value = value,
+      maxAge = Some(600),
+      path = oidcVerifierCookiePath,
+      secure = true,
+      httpOnly = true,
+      sameSite = Some(Cookie.SameSite.Lax)
+    )
 
   def loginViaOpenIdConnect(): Action[AnyContent] = sil.UserAwareAction.async { _ =>
     if (!isOIDCEnabled) {
@@ -806,17 +819,11 @@ class AuthenticationController @Inject()(
       openIdConnectClient
         .getRedirectUrl(absoluteOpenIdConnectCallbackURL)
         .map {
-          case (url, codeVerifier) =>
+          case (url, codeVerifier, state) =>
             Ok(Json.obj("redirect_url" -> url)).withCookies(
-              Cookie(
-                name = oidcVerifierCookieName,
-                value = codeVerifier,
-                maxAge = Some(600),
-                path = oidcVerifierCookiePath,
-                secure = true,
-                httpOnly = true,
-                sameSite = Some(Cookie.SameSite.Lax)
-              ))
+              oidcFlowCookie(oidcVerifierCookieName, codeVerifier),
+              oidcFlowCookie(oidcStateCookieName, state),
+            )
         }
     }
   }
@@ -870,6 +877,10 @@ class AuthenticationController @Inject()(
       _ <- Fox.fromBool(isOIDCEnabled) ?~> "SSO is not enabled"
       codeVerifier <- request.cookies.get(oidcVerifierCookieName).map(_.value).toFox ?~>
         "Missing PKCE verifier cookie. Either the session expired or the cookie was blocked. Start the SSO flow again."
+      expectedState <- request.cookies.get(oidcStateCookieName).map(_.value).toFox ?~>
+        "Missing OIDC state cookie. Start the SSO flow again."
+      receivedState = request.queryString.get("state").flatMap(_.headOption).getOrElse("")
+      _ <- Fox.fromBool(expectedState == receivedState) ?~> "OIDC state mismatch — possible CSRF, refusing token exchange"
       (accessToken: JsObject, idToken: Option[JsObject]) <- openIdConnectClient.getAndValidateTokens(
         absoluteOpenIdConnectCallbackURL,
         request.queryString.get("code").flatMap(_.headOption).getOrElse("missing code"),
@@ -877,7 +888,11 @@ class AuthenticationController @Inject()(
       ) ?~> Msg.Oidc.getTokenFailed ?~> Msg.Oidc.authenticationFailed
       userInfoFromTokens <- extractUserInfoFromTokenResponses(accessToken, idToken)
       userResult <- Fox.fromFuture(loginOrSignupViaOidc(userInfoFromTokens)(request))
-    } yield userResult.discardingCookies(DiscardingCookie(oidcVerifierCookieName, path = oidcVerifierCookiePath))
+    } yield
+      userResult.discardingCookies(
+        DiscardingCookie(oidcVerifierCookieName, path = oidcVerifierCookiePath),
+        DiscardingCookie(oidcStateCookieName, path = oidcVerifierCookiePath),
+      )
   }
 
   private def extractUserInfoFromTokenResponses(accessToken: JsObject,
