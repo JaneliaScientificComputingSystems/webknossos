@@ -68,7 +68,6 @@ class OpenIdConnectClient @Inject()(rpc: RPC, conf: WkConf)(implicit ec: Executi
         .postFormWithJsonResponse[OpenIdConnectTokenResponse](
           Map(
             "grant_type" -> "authorization_code",
-            "client_id" -> oidcConfig.clientId,
             "redirect_uri" -> redirectUrl,
             "code" -> code,
             "scope" -> oidcConfig.scope
