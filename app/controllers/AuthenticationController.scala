@@ -4,7 +4,7 @@ import com.scalableminds.util.Msg
 import com.scalableminds.util.accesscontext.{DBAccessContext, GlobalAccessContext}
 import com.scalableminds.util.box.{Box, Empty, Failure, Full}
 import com.scalableminds.util.objectid.ObjectId
-import com.scalableminds.util.tools.{JsonAutoFormat, Fox, JsonHelper, TextUtils}
+import com.scalableminds.util.tools.{JsonAutoFormat, Fox, TextUtils}
 import com.scalableminds.util.tools.Fox.toFox
 import com.scalableminds.webknossos.datastore.storage.TemporaryStore
 import com.webauthn4j.data.attestation.statement.COSEAlgorithmIdentifier
@@ -762,26 +762,17 @@ class AuthenticationController @Inject() (
         "Missing OIDC state cookie. Start the SSO flow again."
       receivedState = request.queryString.get("state").flatMap(_.headOption).getOrElse("")
       _ <- Fox.fromBool(expectedState == receivedState) ?~> "OIDC state mismatch — possible CSRF, refusing token exchange"
-      (accessToken: JsObject, idToken: Option[JsObject]) <- openIdConnectClient.getAndValidateTokens(
+      userInfoFromTokens <- openIdConnectClient.getAndValidateTokens(
         absoluteOpenIdConnectCallbackURL,
         request.queryString.get("code").flatMap(_.headOption).getOrElse("missing code"),
         codeVerifier
       ) ?~> Msg.Oidc.getTokenFailed ?~> Msg.Oidc.authenticationFailed
-      userInfoFromTokens <- extractUserInfoFromTokenResponses(accessToken, idToken)
       userResult <- loginOrSignupViaOidc(userInfoFromTokens)(request)
     } yield userResult.discardingCookies(
       DiscardingCookie(oidcVerifierCookieName, path = oidcVerifierCookiePath),
       DiscardingCookie(oidcStateCookieName, path = oidcVerifierCookiePath)
     )
   }
-
-  private def extractUserInfoFromTokenResponses(
-      accessToken: JsObject,
-      idTokenOpt: Option[JsObject]
-  ): Fox[OpenIdConnectUserInfo] =
-    JsonHelper
-      .as[OpenIdConnectUserInfo](idTokenOpt.getOrElse(accessToken))
-      .toFox ?~> "Failed to extract user info from id token or access token"
 
   private def shaHex(key: String, valueToDigest: String): String =
     new HmacUtils(HmacAlgorithms.HMAC_SHA_256, key).hmacHex(valueToDigest)
