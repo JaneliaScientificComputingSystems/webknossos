@@ -5,7 +5,7 @@ import com.scalableminds.util.tools.{JsonAutoFormat, Fox, JsonHelper}
 import com.scalableminds.util.tools.Fox.toFox
 import com.scalableminds.webknossos.datastore.rpc.RPC
 import com.typesafe.scalalogging.LazyLogging
-import play.api.libs.json.JsObject
+import play.api.libs.json.{JsObject, Json}
 import pdi.jwt.JwtJson
 import play.api.libs.ws.*
 import utils.WkConf
@@ -126,29 +126,51 @@ class OpenIdConnectClient @Inject() (rpc: RPC, conf: WkConf)(implicit ec: Execut
       serverInfos: OpenIdConnectProviderInfo
   ): Fox[(JsObject, Option[JsObject])] =
     for {
-      publicKey <- fetchServerPublicKey(serverInfos)
-      decdoedAccessToken <- JwtJson.decodeJson(tokenResponse.access_token, publicKey).toFox
-      decodedIdToken: Option[JsObject] <- Fox.runOptional(tokenResponse.id_token)(idToken =>
-        JwtJson.decodeJson(idToken, publicKey).toFox
-      )
+      jsonWebKeySet <- fetchServerKeySet(serverInfos)
+      accessTokenPublicKey <- publicKeyForToken(jsonWebKeySet, tokenResponse.access_token)
+      decdoedAccessToken <- JwtJson.decodeJson(tokenResponse.access_token, accessTokenPublicKey).toFox
+      decodedIdToken: Option[JsObject] <- Fox.runOptional(tokenResponse.id_token) { idToken =>
+        for {
+          idTokenPublicKey <- publicKeyForToken(jsonWebKeySet, idToken)
+          decoded <- JwtJson.decodeJson(idToken, idTokenPublicKey).toFox
+        } yield decoded
+      }
     } yield (decdoedAccessToken, decodedIdToken)
 
-  private def fetchServerPublicKey(serverInfos: OpenIdConnectProviderInfo): Fox[PublicKey] =
+  private def fetchServerKeySet(serverInfos: OpenIdConnectProviderInfo): Fox[JsonWebKeySet] =
     for {
       response: WSResponse <- rpc(serverInfos.jwks_uri)
         .silentIf(!conf.SingleSignOn.OpenIdConnect.verboseLoggingEnabled)
         .get
       jsonWebKeySet: JsonWebKeySet <- JsonHelper.as[JsonWebKeySet](response.json).toFox
-      firstRsaKey: JsonWebKey <- jsonWebKeySet.keys
-        .find(key => key.kty == keyTypeRsa && key.use == "sig")
-        .toFox ?~> "No server RSA Public Key found in server key set"
-      modulusString <- firstRsaKey.n.toFox
+    } yield jsonWebKeySet
+
+  // OPs commonly publish multiple simultaneously-valid signing keys (rotation
+  // overlap), so the key used to verify a token must be selected by matching
+  // the `kid` in the token's header against the JWKS — not just "the first
+  // RSA sig key", which only works by chance.
+  private def publicKeyForToken(jsonWebKeySet: JsonWebKeySet, jwt: String): Fox[PublicKey] = {
+    val kid = extractKid(jwt)
+    for {
+      matchingKey: JsonWebKey <- jsonWebKeySet.keys
+        .find(key => key.kty == keyTypeRsa && key.use == "sig" && kid.forall(key.kid.contains))
+        .toFox ?~> s"No matching RSA public key found in server key set${kid.fold("")(k => s" for kid $k")}"
+      modulusString <- matchingKey.n.toFox
       modulus = new BigInteger(1, Base64.getUrlDecoder.decode(modulusString.getBytes))
-      exponentString <- firstRsaKey.e.toFox
+      exponentString <- matchingKey.e.toFox
       exponent = new BigInteger(1, Base64.getUrlDecoder.decode(exponentString.getBytes))
       publicKeySpec = new RSAPublicKeySpec(modulus, exponent)
       publicKey = KeyFactory.getInstance(keyTypeRsa).generatePublic(publicKeySpec)
     } yield publicKey
+  }
+
+  private def extractKid(jwt: String): Option[String] =
+    jwt.split('.').headOption.flatMap { headerSegment =>
+      scala.util.Try {
+        val headerJson = new String(Base64.getUrlDecoder.decode(headerSegment), StandardCharsets.UTF_8)
+        (Json.parse(headerJson) \ "kid").asOpt[String]
+      }.toOption.flatten
+    }
 
   private def logDebug(message: String): Unit = if (conf.SingleSignOn.OpenIdConnect.verboseLoggingEnabled) {
     logger.info(message)
@@ -221,6 +243,7 @@ case class JsonWebKey(
     kty: String, // key type
     alg: String, // algorithm
     use: String, // usage (sig for signature or enc for encryption)
+    kid: Option[String], // key id
     n: Option[String], // rsa modulus
     e: Option[String] // rsa exponent
 ) derives JsonAutoFormat
