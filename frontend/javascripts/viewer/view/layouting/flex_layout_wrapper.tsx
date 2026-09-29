@@ -38,6 +38,7 @@ import BoundingBoxTab from "viewer/view/right_border_tabs/bounding_box_tab/bound
 import CommentTabView from "viewer/view/right_border_tabs/comment_tab/comment_tab_view";
 import ConnectomeView from "viewer/view/right_border_tabs/connectome_tab/connectome_view";
 import DatasetInfoTabView from "viewer/view/right_border_tabs/dataset_info_tab_view";
+import NeuronIdentityView from "viewer/view/right_border_tabs/neuron_identity_tab/neuron_identity_view";
 import SegmentsView from "viewer/view/right_border_tabs/segments_tab/segments_tab_view";
 import SkeletonTabView from "viewer/view/right_border_tabs/skeleton_tab/skeleton_tab_view";
 import Statusbar from "viewer/view/statusbar";
@@ -341,6 +342,10 @@ class FlexLayoutWrapper extends PureComponent<Props, State> {
 
       case "SegmentsView": {
         return <SegmentsView />;
+      }
+      
+      case "NeuronIdentityView": {
+        return <NeuronIdentityView />;
       }
 
       case "SkeletonTabView": {
