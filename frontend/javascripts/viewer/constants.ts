@@ -213,6 +213,11 @@ export const BorderTabs: Record<string, BorderTabType> = {
     // the connectome tab doesn't do anything, then.
     enableRenderOnDemand: false,
   },
+  NeuronIdentityView: {
+    id: "NeuronIdentityView",
+    name: "Identities",
+    description: "Proof-read predicted neuron identities",
+  },
 };
 export const OrthoViewGrayCrosshairColor = 0x222222;
 export enum ControlModeEnum {
