@@ -10,6 +10,8 @@ interface ImportMetaEnv {
   readonly PROD: boolean
   readonly DEV: boolean
   readonly SSR: boolean
+  // Base URL of tools/neuron_identity_service; defaults to http://localhost:8010 if unset.
+  readonly VITE_PREDICTION_SERVICE_URL?: string
 }
 
 interface ImportMeta {
