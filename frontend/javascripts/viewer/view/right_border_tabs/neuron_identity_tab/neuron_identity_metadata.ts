@@ -5,17 +5,25 @@
  * that knows that encoding; the rest of the feature works with the typed
  * `SegmentIdentity` view-model returned by `getSegmentIdentity`.
  *
- * Model: candidates are keyed by (segment, name), not by segment alone. A
- * segment can have candidate names from multiple independent sources (e.g.
- * a live prediction run and a separately-uploaded offline-prediction CSV),
- * each with its own score for that name; a later run merges into existing
- * per-name scores by source rather than replacing them.
+ * Storage: each source (e.g. a live prediction run against one reference
+ * dataset, or a separately-uploaded offline-prediction CSV) gets its OWN
+ * metadata entry — `identity.<source>` — holding just that source's
+ * candidates as a JSON array of [name, score] tuples (not {name, score}
+ * objects — more compact), sorted by score descending. This is what shows up
+ * in WK's native per-segment metadata table (Segments panel), so keeping one
+ * entry per source, pre-sorted and tuple-encoded, makes the raw value
+ * directly readable there instead of one big merged, unsorted, verbose JSON
+ * blob. Kept short (no "candidates" segment in the key) because WK's
+ * metadata table visually truncates long key names even when they'd fit. A
+ * later run from the same source overwrites only its own entry; other
+ * sources' entries are untouched.
  */
 import type { MetadataEntryProto } from "types/api_types";
 import type { Segment } from "viewer/store";
 
+const CANDIDATES_KEY_PREFIX = "identity.";
+
 export const IdentityMetadataKeys = {
-  candidates: "identity.candidatesJson", // stringValue: JSON-encoded CandidateScores[]
   confirmed: "identity.confirmed", // stringValue: user-chosen name
   predictedAt: "identity.predictedAt", // numberValue: timestamp (ms) of the most recent write
 } as const;
@@ -38,7 +46,21 @@ function findEntry(metadata: MetadataEntryProto[], key: string): MetadataEntryPr
   return metadata.find((entry) => entry.key === key);
 }
 
-function parseCandidates(encoded: string | undefined): CandidateScores[] {
+function candidatesKeyFor(source: string): string {
+  return `${CANDIDATES_KEY_PREFIX}${source}`;
+}
+
+const STATIC_KEYS = Object.values(IdentityMetadataKeys) as string[];
+
+function sourceFromCandidatesKey(key: string): string | null {
+  if (STATIC_KEYS.includes(key) || !key.startsWith(CANDIDATES_KEY_PREFIX)) {
+    return null;
+  }
+  return key.slice(CANDIDATES_KEY_PREFIX.length);
+}
+
+/** Each candidate is stored as a [name, score] tuple (a plain 2-element JSON array), not a {name, score} object. */
+function parseSourceCandidates(encoded: string | undefined): { name: string; score: number }[] {
   if (encoded == null) {
     return [];
   }
@@ -47,10 +69,15 @@ function parseCandidates(encoded: string | undefined): CandidateScores[] {
     if (!Array.isArray(parsed)) {
       return [];
     }
-    return parsed.filter(
-      (candidate): candidate is CandidateScores =>
-        typeof candidate?.name === "string" && typeof candidate?.scoresBySource === "object",
-    );
+    return parsed
+      .filter(
+        (tuple): tuple is [string, number] =>
+          Array.isArray(tuple) &&
+          tuple.length === 2 &&
+          typeof tuple[0] === "string" &&
+          typeof tuple[1] === "number",
+      )
+      .map(([name, score]) => ({ name, score }));
   } catch (_exception) {
     return [];
   }
@@ -59,11 +86,20 @@ function parseCandidates(encoded: string | undefined): CandidateScores[] {
 /** Derive the typed identity view-model from a segment's raw metadata. */
 export function getSegmentIdentity(segment: Segment): SegmentIdentity {
   const metadata = segment.metadata ?? [];
-  const candidates = parseCandidates(
-    findEntry(metadata, IdentityMetadataKeys.candidates)?.stringValue,
-  );
+  const byName = new Map<string, CandidateScores>();
+  for (const entry of metadata) {
+    const source = sourceFromCandidatesKey(entry.key);
+    if (source == null) {
+      continue;
+    }
+    for (const { name, score } of parseSourceCandidates(entry.stringValue)) {
+      const current = byName.get(name) ?? { name, scoresBySource: {} };
+      current.scoresBySource[source] = score;
+      byName.set(name, current);
+    }
+  }
   return {
-    candidates,
+    candidates: Array.from(byName.values()),
     confirmed: findEntry(metadata, IdentityMetadataKeys.confirmed)?.stringValue ?? null,
     predictedAt: findEntry(metadata, IdentityMetadataKeys.predictedAt)?.numberValue ?? null,
   };
@@ -79,8 +115,10 @@ export function getIdentityStatus(identity: SegmentIdentity): IdentityStatus {
 
 /** Whether a segment carries any identity metadata at all. */
 export function hasIdentityMetadata(segment: Segment): boolean {
-  const identityKeys = Object.values(IdentityMetadataKeys) as string[];
-  return (segment.metadata ?? []).some((entry) => identityKeys.includes(entry.key));
+  const staticKeys = Object.values(IdentityMetadataKeys) as string[];
+  return (segment.metadata ?? []).some(
+    (entry) => staticKeys.includes(entry.key) || sourceFromCandidatesKey(entry.key) != null,
+  );
 }
 
 function upsertEntry(
@@ -108,10 +146,10 @@ export function withUnconfirmedIdentity(metadata: MetadataEntryProto[]): Metadat
 }
 
 /**
- * Merge a fresh batch of (name, score) candidates from one source into a
- * segment's existing candidate list. Existing scores from OTHER sources are
- * preserved; this source's score for each name is overwritten with the new
- * value (a re-run from the same source supersedes its own earlier score).
+ * Overwrite this source's own candidate entry with a fresh batch of (name,
+ * score) pairs, sorted by score descending. Other sources' entries are left
+ * untouched — a re-run from the same source supersedes only its own earlier
+ * entry, never another source's.
  */
 export function withMergedCandidates(
   metadata: MetadataEntryProto[],
@@ -119,17 +157,12 @@ export function withMergedCandidates(
   newCandidates: { name: string; score: number }[],
   predictedAt: number,
 ): MetadataEntryProto[] {
-  const existing = parseCandidates(
-    findEntry(metadata, IdentityMetadataKeys.candidates)?.stringValue,
-  );
-  const byName = new Map(existing.map((candidate) => [candidate.name, candidate]));
-  for (const { name, score } of newCandidates) {
-    const current = byName.get(name) ?? { name, scoresBySource: {} };
-    byName.set(name, { name, scoresBySource: { ...current.scoresBySource, [source]: score } });
-  }
+  const sorted = [...newCandidates]
+    .sort((a, b) => b.score - a.score)
+    .map(({ name, score }): [string, number] => [name, score]);
   let next = upsertEntry(metadata, {
-    key: IdentityMetadataKeys.candidates,
-    stringValue: JSON.stringify(Array.from(byName.values())),
+    key: candidatesKeyFor(source),
+    stringValue: JSON.stringify(sorted),
   });
   next = upsertEntry(next, { key: IdentityMetadataKeys.predictedAt, numberValue: predictedAt });
   return next;
