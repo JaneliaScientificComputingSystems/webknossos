@@ -8,7 +8,6 @@ import { readFileAsText } from "libs/read_file";
 import Toast from "libs/toast";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useDispatch } from "react-redux";
-import { batchActions } from "redux-batched-actions";
 import type { Vector3 } from "viewer/constants";
 import { mayEditAnnotation } from "viewer/model/accessors/annotation_accessor";
 import { getMagInfo, getVisibleSegmentationLayer } from "viewer/model/accessors/dataset_accessor";
@@ -16,9 +15,11 @@ import {
   getCurrentMappingName,
   getVisibleSegments,
 } from "viewer/model/accessors/volumetracing_accessor";
-import type { Action } from "viewer/model/actions/actions";
 import { dispatchMaybeFetchMeshFilesAsync } from "viewer/model/actions/annotation_actions";
-import { updateSegmentAction } from "viewer/model/actions/volumetracing_actions";
+import {
+  batchUpdateGroupsAndSegmentsAction,
+  updateSegmentAction,
+} from "viewer/model/actions/volumetracing_actions";
 import { waitUntilRebaseFinished } from "viewer/model/helpers/bounding_box_creation_helpers";
 import {
   getSegmentIdentity,
@@ -46,7 +47,12 @@ import {
 
 const { Text, Title } = Typography;
 
-const PREDICTION_SOURCE = "prediction";
+// Keyed by reference dataset, not a single shared constant, so predictions
+// against different Witvliet stages are kept as parallel scores per name
+// instead of the later run silently overwriting the earlier one's score.
+function predictionSourceFor(referenceDataset: string): string {
+  return `prediction:${referenceDataset}`;
+}
 // Position lookups (segment index / mesh file) still cost one request per
 // new segment, so cap how many of THOSE happen per click — but this no
 // longer limits how many predictions get written, since the write itself is
@@ -420,9 +426,14 @@ export default function PredictionsView() {
     if (actions.length > 0) {
       // See generate_bounding_boxes_modal.tsx for the same pattern: wait out
       // any active rebase so the batch isn't dropped by the rebase edit
-      // guard, then dispatch synchronously.
+      // guard, then dispatch synchronously. Must use
+      // batchUpdateGroupsAndSegmentsAction (not a raw batchActions call with
+      // an invented label) — the save-queue-filling saga only wakes up for
+      // action TYPES listed in VolumeTracingSaveRelevantActions, and a novel
+      // batch label isn't one of them, so the write would silently never
+      // reach the save queue/backend and be lost on reload.
       await waitUntilRebaseFinished();
-      dispatch(batchActions(actions, "UPDATE_PREDICTED_CANDIDATES") as unknown as Action);
+      dispatch(batchUpdateGroupsAndSegmentsAction(actions));
     }
     return { written: actions.length, createdCount, positionedCount };
   };
@@ -486,7 +497,7 @@ export default function PredictionsView() {
       }
 
       const { written, createdCount, positionedCount } = await writeMergedCandidates(
-        PREDICTION_SOURCE,
+        predictionSourceFor(referenceDataset),
         response.predictions,
       );
       Toast.success(
@@ -568,7 +579,7 @@ export default function PredictionsView() {
         ),
       );
       await waitUntilRebaseFinished();
-      dispatch(batchActions(actions, "BACKFILL_SEGMENT_POSITIONS") as unknown as Action);
+      dispatch(batchUpdateGroupsAndSegmentsAction(actions));
       Toast.success(
         `Found a position for ${positionByNeuronId.size}/${idsToFix.length} segment(s).`,
       );

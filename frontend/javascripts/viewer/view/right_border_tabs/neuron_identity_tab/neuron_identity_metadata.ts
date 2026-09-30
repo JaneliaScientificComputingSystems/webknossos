@@ -63,12 +63,6 @@ function parseCandidates(encoded: string | undefined): CandidateScores[] {
   }
 }
 
-/** Best score across sources, for sorting/display; -Infinity if no scores at all. */
-export function bestScore(candidate: CandidateScores): number {
-  const scores = Object.values(candidate.scoresBySource);
-  return scores.length > 0 ? Math.max(...scores) : Number.NEGATIVE_INFINITY;
-}
-
 /** Derive the typed identity view-model from a segment's raw metadata. */
 export function getSegmentIdentity(segment: Segment): SegmentIdentity {
   const metadata = segment.metadata ?? [];
