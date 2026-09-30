@@ -8,6 +8,7 @@ import { readFileAsText } from "libs/read_file";
 import Toast from "libs/toast";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useDispatch } from "react-redux";
+import { batchActions } from "redux-batched-actions";
 import type { Vector3 } from "viewer/constants";
 import { mayEditAnnotation } from "viewer/model/accessors/annotation_accessor";
 import { getMagInfo, getVisibleSegmentationLayer } from "viewer/model/accessors/dataset_accessor";
@@ -15,12 +16,14 @@ import {
   getCurrentMappingName,
   getVisibleSegments,
 } from "viewer/model/accessors/volumetracing_accessor";
+import type { Action } from "viewer/model/actions/actions";
 import { dispatchMaybeFetchMeshFilesAsync } from "viewer/model/actions/annotation_actions";
 import { updateSegmentAction } from "viewer/model/actions/volumetracing_actions";
+import { waitUntilRebaseFinished } from "viewer/model/helpers/bounding_box_creation_helpers";
 import { getBoundingBoxInMag1 } from "viewer/model/sagas/volume/helpers";
 import {
   getSegmentIdentity,
-  withPredictedCandidates,
+  withMergedCandidates,
 } from "viewer/view/right_border_tabs/neuron_identity_tab/neuron_identity_metadata";
 import {
   type ContactEdge,
@@ -29,11 +32,13 @@ import {
   parseContactProfile,
 } from "viewer/view/right_border_tabs/predictions_tab/contact_profile";
 import {
+  getReferenceDatasets,
   type PredictionServiceInputSegment,
   type PredictRequestPayload,
   type PredictResponsePayload,
   requestPredictions,
   type SegmentPredictionPayload,
+  uploadOfflinePredictions,
 } from "viewer/view/right_border_tabs/predictions_tab/prediction_client";
 import {
   getBaseSegmentationName,
@@ -42,11 +47,12 @@ import {
 
 const { Text, Title } = Typography;
 
-const DEFAULT_MODEL = "witvilet";
-// Dispatching one updateSegmentAction per neuron froze the page for large
-// contact profiles (each dispatch runs the reducer + diffing saga + a
-// re-render). Cap writes per Run click until batching is in place.
-const MAX_PREDICTIONS_PER_RUN = 25;
+const PREDICTION_SOURCE = "prediction";
+// Position lookups (segment index / mesh file) still cost one request per
+// new segment, so cap how many of THOSE happen per click — but this no
+// longer limits how many predictions get written, since the write itself is
+// a single batched dispatch regardless of count.
+const MAX_POSITION_LOOKUPS_PER_CLICK = 25;
 
 /** One labeled parameter row. */
 function ParamRow({
@@ -84,10 +90,39 @@ export default function PredictionsView() {
 
   // Prediction parameters. These mirror the (future) prediction-service request;
   // add real algorithm parameters here as they are defined.
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [referenceDataset, setReferenceDataset] = useState<string | null>(null);
+  const [referenceDatasetsStatus, setReferenceDatasetsStatus] = useState<
+    "loading" | "loaded" | "failed"
+  >("loading");
+  const [referenceDatasets, setReferenceDatasets] = useState<string[]>([]);
   const [maxCandidates, setMaxCandidates] = useState(5);
   const [isRunning, setIsRunning] = useState(false);
   const [isBackfilling, setIsBackfilling] = useState(false);
+
+  // Populate the reference-dataset dropdown from the service itself, rather
+  // than hardcoding the list here — it's the service (not the frontend) that
+  // knows which developmental stages it can actually match against.
+  useEffect(() => {
+    let cancelled = false;
+    getReferenceDatasets().then(
+      (datasets) => {
+        if (cancelled) {
+          return;
+        }
+        setReferenceDatasets(datasets);
+        setReferenceDatasetsStatus("loaded");
+        setReferenceDataset((current) => current ?? datasets[0] ?? null);
+      },
+      () => {
+        if (!cancelled) {
+          setReferenceDatasetsStatus("failed");
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Whether this layer has a precomputed segment index at all — without one,
   // there is no way to look up a position for a segment ID the user hasn't
@@ -211,7 +246,7 @@ export default function PredictionsView() {
     if (remainingIds.length > 0 && currentMeshFile != null) {
       // No batched endpoint exists for mesh chunks (unlike the bounding-box
       // lookup above) — one HTTP request per remaining ID. Callers already
-      // cap the id list (MAX_PREDICTIONS_PER_RUN) before calling this.
+      // cap the id list (MAX_POSITION_LOOKUPS_PER_CLICK) before calling this.
       for (const neuronId of remainingIds) {
         const position = await fetchAnchorPositionFromMeshFile(neuronId);
         if (position != null) {
@@ -329,12 +364,87 @@ export default function PredictionsView() {
     setContactFileName(null);
   };
 
+  // Shared by Run (live prediction) and offline-predictions upload: both
+  // produce a batch of (segment, candidates) writes that must land in a
+  // SINGLE dispatch. Dispatching one updateSegmentAction per neuron in a
+  // plain loop runs the reducer + diffing saga + a re-render once per
+  // neuron, synchronously, which froze the tab for large contact profiles —
+  // batchActions collapses that into one reducer pass and one re-render
+  // regardless of how many segments are touched.
+  const writeMergedCandidates = async (
+    source: string,
+    predictions: SegmentPredictionPayload[],
+  ) => {
+    if (visibleSegmentationLayer == null || segments == null) {
+      return { written: 0, createdCount: 0, positionedCount: 0 };
+    }
+    const newSegmentIds = predictions
+      .map((prediction) => BigInt(prediction.segment_id))
+      .filter((segmentId) => segments.getNullable(segmentId) == null);
+
+    // Position lookups cost one request per new segment (mesh-file fallback
+    // has no batched endpoint), so still cap how many of those run per
+    // click — segments beyond the cap are still created and get their
+    // candidates written, just without a known position yet. "Fill in
+    // missing positions" can pick up the rest afterward.
+    const positionLookupIds = newSegmentIds.slice(0, MAX_POSITION_LOOKUPS_PER_CLICK);
+    let positionByNeuronId = new Map<bigint, Vector3>();
+    try {
+      positionByNeuronId = await fetchAnchorPositions(positionLookupIds);
+    } catch (_exception) {
+      // Fall through — segments are created without a position below.
+    }
+
+    const predictedAt = Date.now();
+    let createdCount = 0;
+    let positionedCount = 0;
+    const actions = predictions.map((prediction) => {
+      const segmentId = BigInt(prediction.segment_id);
+      const segment = segments.getNullable(segmentId);
+      const anchorPosition = positionByNeuronId.get(segmentId);
+      if (segment == null) {
+        createdCount += 1;
+        if (anchorPosition != null) {
+          positionedCount += 1;
+        }
+      }
+      return updateSegmentAction(
+        segmentId,
+        {
+          ...(anchorPosition != null ? { anchorPosition } : {}),
+          metadata: withMergedCandidates(
+            segment?.metadata ?? [],
+            source,
+            prediction.candidates,
+            predictedAt,
+          ),
+        },
+        visibleSegmentationLayer.name,
+        undefined,
+        true,
+      );
+    });
+
+    if (actions.length > 0) {
+      // See generate_bounding_boxes_modal.tsx for the same pattern: wait out
+      // any active rebase so the batch isn't dropped by the rebase edit
+      // guard, then dispatch synchronously.
+      await waitUntilRebaseFinished();
+      dispatch(batchActions(actions, "UPDATE_PREDICTED_CANDIDATES") as unknown as Action);
+    }
+    return { written: actions.length, createdCount, positionedCount };
+  };
+
   const handleRun = async () => {
     if (visibleSegmentationLayer == null || segments == null) {
       return;
     }
     if (contactEdges.length === 0) {
       Toast.warning("Load a contact profile file first — its neurons are the prediction targets.");
+      return;
+    }
+    if (referenceDataset == null) {
+      Toast.warning("Select a reference dataset first.");
       return;
     }
     setIsRunning(true);
@@ -356,7 +466,7 @@ export default function PredictionsView() {
         return {
           id: Number(segment.id),
           name: segment.name ?? null,
-          is_confirmed: getSegmentIdentity(segment).status === "confirmed",
+          is_confirmed: getSegmentIdentity(segment).confirmed != null,
         };
       });
 
@@ -368,7 +478,7 @@ export default function PredictionsView() {
           weight: edge.weight,
         })),
         max_candidates: maxCandidates,
-        model,
+        reference_dataset: referenceDataset,
       };
 
       let response: PredictResponsePayload;
@@ -383,94 +493,45 @@ export default function PredictionsView() {
         return;
       }
 
-      // Decide which of the returned predictions this run will actually
-      // write (mirrors the pre-service eligibility check) before doing
-      // anything async, so the position lookup below is scoped to exactly
-      // what's about to be created.
-      const eligiblePredictions: SegmentPredictionPayload[] = [];
-      const newSegmentIds: bigint[] = [];
-      let capped = false;
-      for (const prediction of response.predictions) {
-        if (eligiblePredictions.length >= MAX_PREDICTIONS_PER_RUN) {
-          capped = true;
-          break;
-        }
-        const segment = segments.getNullable(BigInt(prediction.segment_id));
-        if (segment != null) {
-          if (getSegmentIdentity(segment).status !== "none") {
-            // Confirmed identities are seeds for the matcher and are never
-            // re-predicted. Already-predicted/rejected ones are also skipped
-            // so that clicking Run again after hitting the per-run cap
-            // continues with the untouched remainder instead of re-rolling
-            // the same ones. Note: the context menu's "Reset decision" does
-            // NOT make a segment eligible here again — it only clears the
-            // status/confirmed keys, and status is re-derived as "predicted"
-            // as long as candidates still exist (see getSegmentIdentity).
-            continue;
-          }
-        } else {
-          newSegmentIds.push(BigInt(prediction.segment_id));
-        }
-        eligiblePredictions.push(prediction);
-      }
-
-      // New segment entries (contact-profile neurons the user hasn't
-      // clicked on yet) have no known position, so "Go to segment" can't
-      // work for them. Best-effort: if there's no segment index for this
-      // layer or the lookup fails, these segments are still created, just
-      // without a known position, exactly as before.
-      let positionByNeuronId = new Map<bigint, Vector3>();
-      try {
-        positionByNeuronId = await fetchAnchorPositions(newSegmentIds);
-      } catch (_exception) {
-        // Fall through — segments are created without a position below.
-      }
-
-      const predictedAt = Date.now();
-      let written = 0;
-      let createdCount = 0;
-      let positionedCount = 0;
-      for (const prediction of eligiblePredictions) {
-        const segmentId = BigInt(prediction.segment_id);
-        const segment = segments.getNullable(segmentId);
-        const anchorPosition = positionByNeuronId.get(segmentId);
-        if (segment == null) {
-          createdCount += 1;
-          if (anchorPosition != null) {
-            positionedCount += 1;
-          }
-        }
-        dispatch(
-          updateSegmentAction(
-            segmentId,
-            {
-              ...(anchorPosition != null ? { anchorPosition } : {}),
-              metadata: withPredictedCandidates(
-                segment?.metadata ?? [],
-                prediction.candidates,
-                response.model,
-                predictedAt,
-              ),
-            },
-            visibleSegmentationLayer.name,
-            undefined,
-            true,
-          ),
-        );
-        written += 1;
-      }
+      const { written, createdCount, positionedCount } = await writeMergedCandidates(
+        PREDICTION_SOURCE,
+        response.predictions,
+      );
       Toast.success(
         createdCount > 0
           ? `Wrote predictions to ${written} segment(s) (${createdCount} newly added to the segment list, ${positionedCount} with a known position). Proofread them in the Identities tab.`
           : `Wrote predictions to ${written} segment(s). Proofread them in the Identities tab.`,
       );
-      if (capped) {
-        Toast.info(
-          `Capped at ${MAX_PREDICTIONS_PER_RUN} per run (${response.predictions.length} prediction(s) returned). Click Run prediction again to continue with the rest.`,
-        );
-      }
     } finally {
       setIsRunning(false);
+    }
+  };
+
+  const [isUploadingOfflinePredictions, setIsUploadingOfflinePredictions] = useState(false);
+
+  const handleOfflinePredictionsUpload = async (info: UploadChangeParam<UploadFile<any>>) => {
+    const file = info.fileList[info.fileList.length - 1]?.originFileObj;
+    if (file == null || visibleSegmentationLayer == null) {
+      return;
+    }
+    setIsUploadingOfflinePredictions(true);
+    try {
+      const response = await uploadOfflinePredictions(dataset.id, file);
+      const { written, createdCount, positionedCount } = await writeMergedCandidates(
+        file.name,
+        response.predictions,
+      );
+      Toast.success(
+        createdCount > 0
+          ? `Wrote offline predictions to ${written} segment(s) (${createdCount} newly added to the segment list, ${positionedCount} with a known position).`
+          : `Wrote offline predictions to ${written} segment(s).`,
+      );
+    } catch (exception) {
+      Toast.error(
+        exception instanceof Error ? exception.message : "Could not upload offline predictions.",
+      );
+    } finally {
+      setIsUploadingOfflinePredictions(false);
     }
   };
 
@@ -494,8 +555,8 @@ export default function PredictionsView() {
       Toast.info("Every contact-profile segment already has a known position.");
       return;
     }
-    const capped = idsMissingPosition.length > MAX_PREDICTIONS_PER_RUN;
-    const idsToFix = idsMissingPosition.slice(0, MAX_PREDICTIONS_PER_RUN);
+    const capped = idsMissingPosition.length > MAX_POSITION_LOOKUPS_PER_CLICK;
+    const idsToFix = idsMissingPosition.slice(0, MAX_POSITION_LOOKUPS_PER_CLICK);
     setIsBackfilling(true);
     try {
       const positionByNeuronId = await fetchAnchorPositions(idsToFix);
@@ -505,23 +566,23 @@ export default function PredictionsView() {
         );
         return;
       }
-      for (const [neuronId, anchorPosition] of positionByNeuronId) {
-        dispatch(
-          updateSegmentAction(
-            neuronId,
-            { anchorPosition },
-            visibleSegmentationLayer.name,
-            undefined,
-            false,
-          ),
-        );
-      }
+      const actions = Array.from(positionByNeuronId).map(([neuronId, anchorPosition]) =>
+        updateSegmentAction(
+          neuronId,
+          { anchorPosition },
+          visibleSegmentationLayer.name,
+          undefined,
+          false,
+        ),
+      );
+      await waitUntilRebaseFinished();
+      dispatch(batchActions(actions, "BACKFILL_SEGMENT_POSITIONS") as unknown as Action);
       Toast.success(
         `Found a position for ${positionByNeuronId.size}/${idsToFix.length} segment(s).`,
       );
       if (capped) {
         Toast.info(
-          `Capped at ${MAX_PREDICTIONS_PER_RUN} per click (${idsMissingPosition.length} segment(s) missing a position). Click again to continue with the rest.`,
+          `Capped at ${MAX_POSITION_LOOKUPS_PER_CLICK} per click (${idsMissingPosition.length} segment(s) missing a position). Click again to continue with the rest.`,
         );
       }
     } catch (_exception) {
@@ -632,13 +693,21 @@ export default function PredictionsView() {
 
       <Divider style={{ margin: "12px 0" }} />
 
-      <ParamRow label="Model" help="Prediction model / version to run.">
+      <ParamRow
+        label="Reference dataset"
+        help="Developmental-stage contactome to match against, fetched from the prediction service."
+      >
         <Select<string>
           size="small"
-          value={model}
-          onChange={setModel}
+          value={referenceDataset ?? undefined}
+          onChange={setReferenceDataset}
           style={{ width: 180 }}
-          options={[{ value: DEFAULT_MODEL, label: "witvilet (default)" }]}
+          loading={referenceDatasetsStatus === "loading"}
+          placeholder={
+            referenceDatasetsStatus === "failed" ? "Could not load datasets" : "Select a dataset"
+          }
+          disabled={referenceDatasetsStatus !== "loaded"}
+          options={referenceDatasets.map((dataset) => ({ value: dataset, label: dataset }))}
         />
       </ParamRow>
 
@@ -657,11 +726,43 @@ export default function PredictionsView() {
 
       <Divider style={{ margin: "12px 0" }} />
 
-      <Tooltip title={allowUpdate ? undefined : "Open an editable annotation to run prediction."}>
+      <Text strong style={{ display: "block", marginBottom: 4 }}>
+        Offline predictions
+      </Text>
+      <Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
+        Optional: upload a CSV of candidate names computed by another method (e.g. a
+        "SEG1"/"NEURON_ID"/"score" export). Scores merge into the same candidate list as live Run
+        results, shown separately by source, so both can be compared side by side.
+      </Text>
+      <Upload
+        name="offlinePredictions"
+        accept=".csv,.tsv,text/csv,text/tab-separated-values"
+        showUploadList={false}
+        beforeUpload={() => false}
+        onChange={handleOfflinePredictionsUpload}
+        maxCount={1}
+        disabled={!allowUpdate || isUploadingOfflinePredictions}
+      >
+        <Button icon={<UploadOutlined />} loading={isUploadingOfflinePredictions}>
+          Upload offline predictions CSV…
+        </Button>
+      </Upload>
+
+      <Divider style={{ margin: "12px 0" }} />
+
+      <Tooltip
+        title={
+          !allowUpdate
+            ? "Open an editable annotation to run prediction."
+            : referenceDataset == null
+              ? "Select a reference dataset first."
+              : undefined
+        }
+      >
         <Button
           type="primary"
           icon={<ThunderboltOutlined />}
-          disabled={!allowUpdate}
+          disabled={!allowUpdate || referenceDataset == null}
           loading={isRunning}
           onClick={handleRun}
           block
@@ -669,11 +770,6 @@ export default function PredictionsView() {
           Run prediction
         </Button>
       </Tooltip>
-
-      <Text type="secondary" style={{ display: "block", marginTop: 8, fontSize: 12 }}>
-        Note: the prediction algorithm itself is still a placeholder on the service side — only the
-        write pipeline and contract are final.
-      </Text>
     </div>
   );
 }
