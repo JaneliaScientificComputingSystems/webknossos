@@ -25,7 +25,6 @@ export type PredictRequestPayload = {
   segments: PredictionServiceInputSegment[];
   contact_edges: PredictionServiceContactEdge[];
   exclude_assigned_names?: boolean;
-  max_candidates?: number;
   reference_dataset: string;
 };
 
@@ -109,7 +108,7 @@ export async function getReferenceDatasetNeurons(
   );
 }
 
-/** PUT a CSV of externally-computed candidate predictions ("SEG1"/"NEURON_ID"/"score" columns), stored server-side per datasetId. */
+/** PUT a CSV of externally-computed candidate predictions ("seg"/"neuron"/"score" columns), stored server-side per datasetId. */
 export async function uploadOfflinePredictions(
   datasetId: string,
   file: File,

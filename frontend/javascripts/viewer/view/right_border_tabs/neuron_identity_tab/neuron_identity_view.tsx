@@ -1,8 +1,14 @@
-import { AimOutlined, CheckOutlined } from "@ant-design/icons";
 import {
+  AimOutlined,
+  CaretDownOutlined,
+  CaretUpOutlined,
+  CheckOutlined,
+} from "@ant-design/icons";
+import {
+  AutoComplete,
   Button,
+  Checkbox,
   Empty,
-  InputNumber,
   type MenuProps,
   Segmented,
   Select,
@@ -23,6 +29,7 @@ import { getVisibleSegmentationLayer } from "viewer/model/accessors/dataset_acce
 import { layerToGlobalTransformedPosition } from "viewer/model/accessors/dataset_layer_transformation_accessor";
 import {
   getSegmentColorAsRGBA,
+  getSelectedIds,
   getVisibleSegments,
 } from "viewer/model/accessors/volumetracing_accessor";
 import {
@@ -38,7 +45,6 @@ import {
 import { rgbaToCSS } from "viewer/shaders/utils.glsl";
 import type { Segment } from "viewer/store";
 import Store from "viewer/store";
-import { InputWithUpdateOnBlur } from "viewer/view/components/input_with_update_on_blur";
 import { getContextMenuPositionFromEvent } from "viewer/view/context_menu/helpers";
 import PredictionsView from "viewer/view/right_border_tabs/predictions_tab/predictions_view";
 import { ContextMenuContainer } from "viewer/view/right_border_tabs/sidebar_context_menu";
@@ -148,21 +154,37 @@ function topCandidateAverageScore(identity: SegmentIdentity): number {
   return top != null ? top.score : Number.NEGATIVE_INFINITY;
 }
 
+/** This segment's cross-source average score for ONE specific name, or -Infinity if it's not a candidate at all. */
+function averageScoreForName(identity: SegmentIdentity, name: string): number {
+  const candidate = identity.candidates.find((c) => c.name === name);
+  if (candidate == null) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  return averageScore(candidate, allSourcesFor(identity.candidates));
+}
+
 function IdentityListItem({
   row,
   allowUpdate,
   isActive,
-  topNPerRow,
+  highlightName,
   onGoTo,
   onConfirm,
+  onUnconfirm,
+  onSearchName,
   onContextMenu,
 }: {
   row: IdentityRow;
   allowUpdate: boolean;
   isActive: boolean;
-  topNPerRow: number;
+  /** A candidate name to visually call out in this row, e.g. the query in Search by Name. */
+  highlightName?: string;
   onGoTo: (segment: Segment) => void;
   onConfirm: (segment: Segment, name: string) => void;
+  /** Double-click on the ALREADY-confirmed tag: clear the confirmation instead of re-confirming it. */
+  onUnconfirm: (segment: Segment) => void;
+  /** Single-click on a candidate tag: search for that name instead of confirming. */
+  onSearchName: (name: string) => void;
   onContextMenu: (event: MouseEvent<HTMLDivElement>, row: IdentityRow) => void;
 }) {
   const { segment, identity, status } = row;
@@ -170,39 +192,51 @@ function IdentityListItem({
     (state) => getSegmentColorAsRGBA(state, segment.id),
     (a: Vector4, b: Vector4) => V4.isEqual(a, b),
   );
-  const displayName = identity.confirmed ?? segment.name ?? null;
-  const sourceGroups = groupCandidatesBySource(identity.candidates).map((group) => ({
-    ...group,
-    candidates: group.candidates.slice(0, topNPerRow),
-  }));
-  const averageRanking = averageCandidateRanking(identity.candidates).slice(0, topNPerRow);
+  // Deliberately NOT falling back to segment.name here: that's WK's native
+  // per-segment name field, set independently of our identity-confirmation
+  // system (e.g. leftover from before free-text editing was removed from
+  // this row) — showing it would let the name field disagree with the
+  // status tag (e.g. "unlabeled" but a name still showing).
+  const displayName = identity.confirmed;
+  const sourceGroups = groupCandidatesBySource(identity.candidates);
+  const averageRanking = averageCandidateRanking(identity.candidates);
 
-  const renderCandidateTag = (name: string, score: number, sourceLabel: string) => {
+  const renderCandidateTag = (name: string, score: number) => {
     const isConfirmed = identity.confirmed === name;
+    const isHighlighted = highlightName != null && name === highlightName;
     return (
       <Tooltip
         key={name}
         title={
-          isConfirmed
-            ? "Selected identity"
-            : allowUpdate
-              ? `${sourceLabel}: ${formatScore(score)} — click to confirm`
-              : `${sourceLabel}: ${formatScore(score)}`
+          allowUpdate
+            ? `Click to search — double-click to ${isConfirmed ? "unconfirm" : "confirm"}`
+            : "Click to search"
         }
       >
         <Tag
           color={isConfirmed ? "green" : undefined}
           icon={isConfirmed ? <CheckOutlined /> : undefined}
           style={{
-            cursor: allowUpdate ? "pointer" : "default",
+            cursor: "pointer",
             marginInlineEnd: 0,
+            flexShrink: 0,
             ...(isConfirmed && {
               fontWeight: 600,
               // Simulate a "pressed" button look for the chosen identity.
               boxShadow: "inset 0 1px 3px rgba(0, 0, 0, 0.3)",
             }),
+            ...(isHighlighted &&
+              !isConfirmed && {
+                outline: "2px solid #faad14",
+                outlineOffset: -1,
+              }),
           }}
-          onClick={allowUpdate ? () => onConfirm(segment, name) : undefined}
+          onClick={() => onSearchName(name)}
+          onDoubleClick={
+            allowUpdate
+              ? () => (isConfirmed ? onUnconfirm(segment) : onConfirm(segment, name))
+              : undefined
+          }
         >
           {name} {formatScore(score)}
         </Tag>
@@ -247,24 +281,9 @@ function IdentityListItem({
         <Text type="secondary" style={{ fontVariantNumeric: "tabular-nums" }}>
           #{segment.id}
         </Text>
-        {allowUpdate ? (
-          <InputWithUpdateOnBlur
-            value={displayName ?? ""}
-            onChange={(newName) => {
-              const trimmed = newName.trim();
-              if (trimmed.length > 0) {
-                onConfirm(segment, trimmed);
-              }
-            }}
-            size="small"
-            placeholder="Assign name…"
-            style={{ flex: 1 }}
-          />
-        ) : (
-          <Text strong ellipsis style={{ flex: 1 }}>
-            {displayName ?? <Text type="secondary">unnamed</Text>}
-          </Text>
-        )}
+        <Text strong ellipsis style={{ flex: 1 }}>
+          {displayName ?? <Text type="secondary">unnamed</Text>}
+        </Text>
         <Tag color={STATUS_TAG_COLOR[status]} style={{ marginInlineEnd: 0 }}>
           {STATUS_LABEL[status]}
         </Tag>
@@ -282,8 +301,8 @@ function IdentityListItem({
               >
                 average
               </Text>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                {averageRanking.map(({ name, score }) => renderCandidateTag(name, score, "average"))}
+              <div style={{ display: "flex", flexWrap: "nowrap", gap: 4, overflowX: "auto" }}>
+                {averageRanking.map(({ name, score }) => renderCandidateTag(name, score))}
               </div>
             </div>
           )}
@@ -300,8 +319,8 @@ function IdentityListItem({
               >
                 {source}
               </Text>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                {candidates.map(({ name, score }) => renderCandidateTag(name, score, source))}
+              <div style={{ display: "flex", flexWrap: "nowrap", gap: 4, overflowX: "auto" }}>
+                {candidates.map(({ name, score }) => renderCandidateTag(name, score))}
               </div>
             </div>
           ))}
@@ -312,14 +331,233 @@ function IdentityListItem({
   );
 }
 
+/**
+ * The reverse lookup of the main Proofreading list: instead of "for this
+ * segment, which names might it be", this answers "for this NAME, which
+ * segments might it be" — ranking every segment in the list by its
+ * cross-source average score for exactly the typed name (segments where
+ * that name isn't a candidate at all sort last, via -Infinity).
+ */
+function SearchByNameView({
+  allRows,
+  allowUpdate,
+  activeCellId,
+  query,
+  onQueryChange,
+  onGoTo,
+  onConfirm,
+  onUnconfirm,
+  onContextMenu,
+}: {
+  allRows: IdentityRow[];
+  allowUpdate: boolean;
+  activeCellId: bigint | undefined;
+  query: string;
+  onQueryChange: (query: string) => void;
+  onGoTo: (segment: Segment) => void;
+  onConfirm: (segment: Segment, name: string) => void;
+  onUnconfirm: (segment: Segment) => void;
+  onContextMenu: (event: MouseEvent<HTMLDivElement>, row: IdentityRow) => void;
+}) {
+  // By default ("Exclude confirmed neurons" checked), a segment already
+  // confirmed as a DIFFERENT name is excluded from both the results list and
+  // the autocomplete's suggestions — it can't be confirmed as the searched
+  // name anyway (see the duplicate-name guard in handleConfirm), so
+  // surfacing it as a "match" or suggesting its name is just noise.
+  // Unchecking is the escape hatch for the rare case of wanting to
+  // reconsider/reassign an already-confirmed segment.
+  const [includeConfirmedElsewhere, setIncludeConfirmedElsewhere] = useState(false);
+  const trimmedQuery = query.trim();
+
+  // Every candidate name seen across all segments' predictions/offline-CSV
+  // results so far — the autocomplete's suggestion pool. Local and free (no
+  // network call), but only covers names a prediction has actually surfaced;
+  // a name with zero predictions anywhere won't be suggested even if it's a
+  // real neuron.
+  const confirmedNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const row of allRows) {
+      if (row.identity.confirmed != null) {
+        names.add(row.identity.confirmed);
+      }
+    }
+    return names;
+  }, [allRows]);
+
+  const knownNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const row of allRows) {
+      for (const candidate of row.identity.candidates) {
+        if (includeConfirmedElsewhere || !confirmedNames.has(candidate.name)) {
+          names.add(candidate.name);
+        }
+      }
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [allRows, confirmedNames, includeConfirmedElsewhere]);
+
+  const nameOptions = useMemo(() => {
+    const lowerQuery = query.trim().toLowerCase();
+    const filtered =
+      lowerQuery.length === 0
+        ? knownNames
+        : knownNames.filter((name) => name.toLowerCase().startsWith(lowerQuery));
+    return filtered.map((name) => ({ value: name }));
+  }, [knownNames, query]);
+
+  const matches = useMemo(() => {
+    if (trimmedQuery.length === 0) {
+      return [];
+    }
+    return allRows
+      .filter((row) => Number.isFinite(averageScoreForName(row.identity, trimmedQuery)))
+      .filter(
+        (row) =>
+          includeConfirmedElsewhere ||
+          row.identity.confirmed == null ||
+          row.identity.confirmed === trimmedQuery,
+      )
+      .sort(
+        (a, b) =>
+          averageScoreForName(b.identity, trimmedQuery) -
+          averageScoreForName(a.identity, trimmedQuery),
+      );
+  }, [allRows, trimmedQuery, includeConfirmedElsewhere]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      <div
+        style={{
+          padding: 8,
+          borderBottom: "1px solid var(--color-wk-border, rgba(128,128,128,0.2))",
+        }}
+      >
+        <AutoComplete
+          value={query}
+          onChange={onQueryChange}
+          options={nameOptions}
+          filterOption={false}
+          size="small"
+          placeholder="Neuron name…"
+          style={{ width: "100%" }}
+        />
+        <Checkbox
+          checked={!includeConfirmedElsewhere}
+          onChange={(event) => setIncludeConfirmedElsewhere(!event.target.checked)}
+          style={{ marginTop: 8, fontSize: 12 }}
+        >
+          Exclude confirmed neurons
+        </Checkbox>
+      </div>
+
+      <div style={{ flex: 1, overflowY: "auto" }}>
+        {trimmedQuery.length === 0 ? (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description="Type a neuron name to see which segments might match."
+            style={{ marginTop: 40 }}
+          />
+        ) : matches.length === 0 ? (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={`No segment has "${trimmedQuery}" as a candidate.`}
+            style={{ marginTop: 40 }}
+          />
+        ) : (
+          matches.map((row) => (
+            <IdentityListItem
+              key={row.segment.id}
+              row={row}
+              allowUpdate={allowUpdate}
+              isActive={activeCellId === row.segment.id}
+              highlightName={trimmedQuery}
+              onGoTo={onGoTo}
+              onConfirm={onConfirm}
+              onUnconfirm={onUnconfirm}
+              onSearchName={onQueryChange}
+              onContextMenu={onContextMenu}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Shows exactly one segment: whichever was most recently clicked, either as
+ * a voxel in the 2D/3D data viewport or as a row in WK's native Segments
+ * panel list — both funnel into the same `selectedIds` store state (see
+ * updateClickedSegments in volumetracing_saga.tsx), unlike `activeCellId`,
+ * which only visually highlights in Proofreading-tool mode. A multi-select
+ * (shift/ctrl-click in the Segments panel) still resolves to "the first of
+ * the selection", rather than showing nothing or all of them.
+ */
+function CurrentSegmentView({
+  allRows,
+  allowUpdate,
+  selectedSegmentId,
+  onGoTo,
+  onConfirm,
+  onUnconfirm,
+  onSearchName,
+  onContextMenu,
+}: {
+  allRows: IdentityRow[];
+  allowUpdate: boolean;
+  selectedSegmentId: bigint | undefined;
+  onGoTo: (segment: Segment) => void;
+  onConfirm: (segment: Segment, name: string) => void;
+  onUnconfirm: (segment: Segment) => void;
+  onSearchName: (name: string) => void;
+  onContextMenu: (event: MouseEvent<HTMLDivElement>, row: IdentityRow) => void;
+}) {
+  const currentRow =
+    selectedSegmentId != null
+      ? allRows.find((row) => row.segment.id === selectedSegmentId)
+      : undefined;
+
+  if (currentRow == null) {
+    return (
+      <Empty
+        image={Empty.PRESENTED_IMAGE_SIMPLE}
+        description="Click a segment in the data viewport or the Segments panel to see it here."
+        style={{ marginTop: 40 }}
+      />
+    );
+  }
+
+  return (
+    <IdentityListItem
+      row={currentRow}
+      allowUpdate={allowUpdate}
+      isActive
+      onGoTo={onGoTo}
+      onConfirm={onConfirm}
+      onUnconfirm={onUnconfirm}
+      onSearchName={onSearchName}
+      onContextMenu={onContextMenu}
+    />
+  );
+}
+
 export default function NeuronIdentityView() {
   const dispatch = useDispatch();
   const [filter, setFilter] = useState<FilterKey>("all");
   const [sortBy, setSortBy] = useState<SortKey>("confidence");
-  const [topNPerRow, setTopNPerRow] = useState(3);
   const [contextMenuPosition, setContextMenuPosition] = useState<[number, number] | null>(null);
   const [contextMenu, setContextMenu] = useState<MenuProps | null>(null);
-  const [subTab, setSubTab] = useState<"proofread" | "predictions">("proofread");
+  const [subTab, setSubTab] = useState<"proofread" | "predictions" | "searchByName">("proofread");
+  // Search by Name's query, lifted here so clicking a candidate tag anywhere
+  // (including the main Proofreading list) can populate it and jump to that
+  // tab, not just from within Search by Name's own result rows.
+  const [searchByNameQuery, setSearchByNameQuery] = useState("");
+  const handleSearchName = (name: string) => {
+    setSearchByNameQuery(name);
+    setSubTab("searchByName");
+  };
+  const [isCurrentSegmentExpanded, setIsCurrentSegmentExpanded] = useState(true);
+  const [isConfirmedIdsExpanded, setIsConfirmedIdsExpanded] = useState(true);
 
   const visibleSegmentationLayer = useWkSelector(getVisibleSegmentationLayer);
   const segments = useWkSelector((state) => getVisibleSegments(state).segments);
@@ -338,6 +576,11 @@ export default function NeuronIdentityView() {
     return state.annotation.volumes.find((volume) => volume.tracingId === layer.tracingId)
       ?.activeCellId;
   });
+  // The segment most recently clicked, either as a voxel in the data
+  // viewport or as a row in the Segments panel — both update this same
+  // state (see CurrentSegmentView's doc comment). A multi-select resolves to
+  // its first entry.
+  const selectedSegmentId = useWkSelector((state) => getSelectedIds(state).segments[0]);
 
   const allRows = useMemo<IdentityRow[]>(() => {
     if (segments == null) {
@@ -357,8 +600,8 @@ export default function NeuronIdentityView() {
         return a.segment.id < b.segment.id ? -1 : a.segment.id > b.segment.id ? 1 : 0;
       }
       if (sortBy === "name") {
-        const nameA = a.identity.confirmed ?? a.segment.name ?? "";
-        const nameB = b.identity.confirmed ?? b.segment.name ?? "";
+        const nameA = a.identity.confirmed ?? "";
+        const nameB = b.identity.confirmed ?? "";
         return nameA.localeCompare(nameB);
       }
       // "confidence"
@@ -374,6 +617,15 @@ export default function NeuronIdentityView() {
 
   const handleConfirm = (segment: Segment, name: string) => {
     if (visibleSegmentationLayer == null) {
+      return;
+    }
+    const conflictingRow = allRows.find(
+      (row) => row.segment.id !== segment.id && row.identity.confirmed === name,
+    );
+    if (conflictingRow != null) {
+      Toast.error(
+        `"${name}" is already confirmed on segment #${conflictingRow.segment.id} — clear that confirmation first if you want to reassign it.`,
+      );
       return;
     }
     dispatch(
@@ -559,21 +811,57 @@ export default function NeuronIdentityView() {
         menu={contextMenu}
         className={CONTEXT_MENU_OVERLAY_CLASS}
       />
+
+      <div
+        style={{
+          padding: 8,
+          borderBottom: "1px solid var(--color-wk-border, rgba(128,128,128,0.2))",
+          flex: "0 0 auto",
+        }}
+      >
+        <Button
+          type="text"
+          size="small"
+          style={{ padding: 0, height: "auto", fontWeight: "bold", fontSize: 12 }}
+          icon={isCurrentSegmentExpanded ? <CaretUpOutlined /> : <CaretDownOutlined />}
+          iconPosition="end"
+          onClick={() => setIsCurrentSegmentExpanded((expanded) => !expanded)}
+        >
+          Current segment
+        </Button>
+        {isCurrentSegmentExpanded && (
+          <div style={{ marginTop: 4 }}>
+            <CurrentSegmentView
+              allRows={allRows}
+              allowUpdate={allowUpdate}
+              selectedSegmentId={selectedSegmentId}
+              onGoTo={handleGoTo}
+              onConfirm={handleConfirm}
+              onUnconfirm={handleResetDecision}
+              onSearchName={handleSearchName}
+              onContextMenu={onRowContextMenu}
+            />
+          </div>
+        )}
+      </div>
+
       <Tabs
         activeKey={subTab}
-        onChange={(key) => setSubTab(key as "proofread" | "predictions")}
+        onChange={(key) => setSubTab(key as "proofread" | "predictions" | "searchByName")}
         size="small"
         tabBarStyle={{ paddingInline: 8, marginBottom: 0 }}
         items={[
           { key: "proofread", label: "Proofreading" },
-          { key: "predictions", label: "Predictions" },
+          { key: "predictions", label: "ID Prediction" },
+          { key: "searchByName", label: "Search by Name" },
         ]}
       />
 
       {/*
-        Both sub-tabs stay mounted (toggled via `display`) rather than being
+        All sub-tabs stay mounted (toggled via `display`) rather than being
         conditionally rendered, so panel-local state — e.g. the Predictions
-        tab's in-memory contact profile — survives switching sub-tabs.
+        tab's in-memory contact profile, or the Search by Name query — survives
+        switching sub-tabs.
       */}
       <div
         style={{ flex: 1, minHeight: 0, display: subTab === "predictions" ? undefined : "none" }}
@@ -581,10 +869,25 @@ export default function NeuronIdentityView() {
         <PredictionsView />
       </div>
       <div
+        style={{ flex: 1, minHeight: 0, display: subTab === "searchByName" ? undefined : "none" }}
+      >
+        <SearchByNameView
+          allRows={allRows}
+          allowUpdate={allowUpdate}
+          activeCellId={activeCellId}
+          query={searchByNameQuery}
+          onQueryChange={setSearchByNameQuery}
+          onGoTo={handleGoTo}
+          onConfirm={handleConfirm}
+          onUnconfirm={handleResetDecision}
+          onContextMenu={onRowContextMenu}
+        />
+      </div>
+      <div
         style={{
           flex: 1,
           minHeight: 0,
-          display: subTab === "predictions" ? "none" : "flex",
+          display: subTab === "proofread" ? "flex" : "none",
           flexDirection: "column",
         }}
       >
@@ -619,17 +922,6 @@ export default function NeuronIdentityView() {
                 { label: "Sort: name", value: "name" },
               ]}
             />
-            <Tooltip title="Show at most this many candidates per row (per source, and in the average row).">
-              <InputNumber
-                size="small"
-                min={1}
-                max={50}
-                value={topNPerRow}
-                onChange={(value) => setTopNPerRow(value ?? 1)}
-                addonBefore="Top N"
-                style={{ width: 110 }}
-              />
-            </Tooltip>
           </div>
         </div>
 
@@ -649,14 +941,68 @@ export default function NeuronIdentityView() {
                 row={row}
                 allowUpdate={allowUpdate}
                 isActive={activeCellId === row.segment.id}
-                topNPerRow={topNPerRow}
                 onGoTo={handleGoTo}
                 onConfirm={handleConfirm}
+                onUnconfirm={handleResetDecision}
+                onSearchName={handleSearchName}
                 onContextMenu={onRowContextMenu}
               />
             ))
           )}
         </div>
+      </div>
+
+      <div
+        style={{
+          padding: 8,
+          borderTop: "1px solid var(--color-wk-border, rgba(128,128,128,0.2))",
+          flex: "0 0 auto",
+        }}
+      >
+        <Button
+          type="text"
+          size="small"
+          style={{ padding: 0, height: "auto", fontWeight: "bold", fontSize: 12 }}
+          icon={isConfirmedIdsExpanded ? <CaretUpOutlined /> : <CaretDownOutlined />}
+          iconPosition="end"
+          onClick={() => setIsConfirmedIdsExpanded((expanded) => !expanded)}
+        >
+          Confirmed IDs ({confirmedCount})
+        </Button>
+        {isConfirmedIdsExpanded && confirmedCount === 0 && (
+          <Text type="secondary" style={{ display: "block", fontSize: 12, marginTop: 4 }}>
+            No confirmed identities yet.
+          </Text>
+        )}
+        {isConfirmedIdsExpanded && confirmedCount > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, maxHeight: 80, overflowY: "auto" }}>
+            {allRows
+              .filter(
+                (row): row is IdentityRow & { identity: { confirmed: string } } =>
+                  row.identity.confirmed != null,
+              )
+              .sort((a, b) => a.identity.confirmed.localeCompare(b.identity.confirmed))
+              .map((row) => (
+                <Tooltip
+                  key={row.segment.id}
+                  title={
+                    allowUpdate
+                      ? "Click to select — double-click to unconfirm"
+                      : "Click to select"
+                  }
+                >
+                  <Tag
+                    color="green"
+                    style={{ cursor: "pointer" }}
+                    onClick={() => handleGoTo(row.segment)}
+                    onDoubleClick={allowUpdate ? () => handleResetDecision(row.segment) : undefined}
+                  >
+                    {row.identity.confirmed} (#{row.segment.id})
+                  </Tag>
+                </Tooltip>
+              ))}
+          </div>
+        )}
       </div>
     </div>
   );
