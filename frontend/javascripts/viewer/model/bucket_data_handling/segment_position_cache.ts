@@ -31,11 +31,12 @@
  * locally, never used to create a new segment-list entry — scrolling past a
  * segment you're not otherwise working with shouldn't silently add it.
  */
-import { batchActions } from "redux-batched-actions";
-import type { Action } from "viewer/model/actions/actions";
 import { getSegmentationLayerByName } from "viewer/model/accessors/dataset_accessor";
 import { getSegmentsForLayer } from "viewer/model/accessors/volumetracing_accessor";
-import { updateSegmentAction } from "viewer/model/actions/volumetracing_actions";
+import {
+  batchUpdateGroupsAndSegmentsAction,
+  updateSegmentAction,
+} from "viewer/model/actions/volumetracing_actions";
 import Constants, { type Vector3 } from "viewer/constants";
 import { listenToStoreProperty } from "viewer/model/helpers/listener_helpers";
 import Store from "viewer/store";
@@ -140,7 +141,7 @@ function backfillExistingSegmentPositions(
   } catch (_exception) {
     return;
   }
-  const actions: Action[] = [];
+  const actions = [];
   for (const [segmentId, position] of positionsBySegmentId) {
     const segment = segments.getNullable(segmentId);
     if (segment != null && segment.anchorPosition == null) {
@@ -148,7 +149,12 @@ function backfillExistingSegmentPositions(
     }
   }
   if (actions.length > 0) {
-    Store.dispatch(batchActions(actions, "BACKFILL_SEGMENT_POSITION_FROM_CACHE") as unknown as Action);
+    // Must use batchUpdateGroupsAndSegmentsAction, not a raw batchActions
+    // call with an invented label — the save-queue-filling saga only wakes
+    // up for action TYPES listed in VolumeTracingSaveRelevantActions, and a
+    // novel batch label isn't one of them, so the write would silently never
+    // reach the save queue/backend and be lost on reload.
+    Store.dispatch(batchUpdateGroupsAndSegmentsAction(actions));
   }
 }
 
@@ -178,7 +184,7 @@ function checkSegmentListAgainstCache(layerName: string): void {
   } catch (_exception) {
     return;
   }
-  const actions: Action[] = [];
+  const actions = [];
   for (const segment of segments.values()) {
     if (checkedIds.has(segment.id)) {
       continue;
@@ -193,9 +199,7 @@ function checkSegmentListAgainstCache(layerName: string): void {
     }
   }
   if (actions.length > 0) {
-    Store.dispatch(
-      batchActions(actions, "BACKFILL_SEGMENT_POSITION_ON_LIST_CHANGE") as unknown as Action,
-    );
+    Store.dispatch(batchUpdateGroupsAndSegmentsAction(actions));
   }
 }
 
