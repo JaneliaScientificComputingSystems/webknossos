@@ -1,12 +1,12 @@
 import { DeleteOutlined, ThunderboltOutlined, UploadOutlined } from "@ant-design/icons";
 import { getMeshFileChunksForSegment } from "admin/api/mesh";
 import { getSegmentCentersOfMass } from "admin/rest_api";
-import { Button, Divider, Empty, InputNumber, Select, Tooltip, Typography, Upload } from "antd";
+import { Button, Divider, Empty, Select, Tooltip, Typography, Upload } from "antd";
 import type { UploadChangeParam, UploadFile } from "antd/lib/upload";
 import { useWkSelector } from "libs/react_hooks";
 import { readFileAsText } from "libs/read_file";
 import Toast from "libs/toast";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { useDispatch } from "react-redux";
 import type { Vector3 } from "viewer/constants";
 import { mayEditAnnotation } from "viewer/model/accessors/annotation_accessor";
@@ -45,7 +45,7 @@ import {
   hasSegmentIndex,
 } from "viewer/view/right_border_tabs/segments_tab/segments_view_helper";
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 
 // Keyed by reference dataset, not a single shared constant, so predictions
 // against different Witvliet stages are kept as parallel scores per name
@@ -100,9 +100,7 @@ export default function PredictionsView() {
     "loading" | "loaded" | "failed"
   >("loading");
   const [referenceDatasets, setReferenceDatasets] = useState<string[]>([]);
-  const [maxCandidates, setMaxCandidates] = useState(5);
   const [isRunning, setIsRunning] = useState(false);
-  const [isBackfilling, setIsBackfilling] = useState(false);
 
   // Populate the reference-dataset dropdown from the service itself, rather
   // than hardcoding the list here — it's the service (not the frontend) that
@@ -129,46 +127,11 @@ export default function PredictionsView() {
     };
   }, []);
 
-  // Whether this layer has a precomputed segment index at all — without one,
-  // there is no way to look up a position for a segment ID the user hasn't
-  // clicked on, and every "position unknown" symptom below is expected, not a
-  // bug. Checked once per layer so the UI can say so up front instead of only
-  // surfacing it after a Run.
-  const [segmentIndexStatus, setSegmentIndexStatus] = useState<
-    "checking" | "available" | "unavailable"
-  >("checking");
-  useEffect(() => {
-    if (visibleSegmentationLayer == null) {
-      setSegmentIndexStatus("unavailable");
-      return;
-    }
-    let cancelled = false;
-    setSegmentIndexStatus("checking");
-    hasSegmentIndex(visibleSegmentationLayer, dataset, annotation).then(
-      (available) => {
-        if (!cancelled) {
-          setSegmentIndexStatus(available ? "available" : "unavailable");
-        }
-      },
-      () => {
-        if (!cancelled) {
-          setSegmentIndexStatus("unavailable");
-        }
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [visibleSegmentationLayer, dataset, annotation]);
-
-  // Whether this layer has a precomputed mesh file at all — the second,
-  // independent position source (see MESH_POSITION_LOOKUP_PLAN.md). Reuses
-  // the same fetch+auto-activate mechanism the Segments panel and 3D viewport
-  // use (precomputed_mesh_saga.ts), so `currentMeshFile` below ends up
-  // populated in Redux as a side effect, not just this status flag.
-  const [meshFileStatus, setMeshFileStatus] = useState<"checking" | "available" | "unavailable">(
-    "checking",
-  );
+  // Ensures this layer's mesh file (if any) is fetched and activated as a
+  // side effect (precomputed_mesh_saga.ts) — populates `currentMeshFile`
+  // below, which the mesh-file position fallback in fetchAnchorPositions
+  // needs. hasSegmentIndex (the other position source) is checked directly
+  // inside fetchAnchorPositions instead, at call time.
   const currentMeshFile = useWkSelector((state) =>
     visibleSegmentationLayer != null
       ? state.localSegmentationStateByLayer[visibleSegmentationLayer.name]?.currentMeshFile
@@ -176,26 +139,9 @@ export default function PredictionsView() {
   );
   useEffect(() => {
     if (visibleSegmentationLayer == null) {
-      setMeshFileStatus("unavailable");
       return;
     }
-    let cancelled = false;
-    setMeshFileStatus("checking");
-    dispatchMaybeFetchMeshFilesAsync(dispatch, visibleSegmentationLayer, dataset, false).then(
-      (availableMeshFiles) => {
-        if (!cancelled) {
-          setMeshFileStatus(availableMeshFiles.length > 0 ? "available" : "unavailable");
-        }
-      },
-      () => {
-        if (!cancelled) {
-          setMeshFileStatus("unavailable");
-        }
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
+    dispatchMaybeFetchMeshFilesAsync(dispatch, visibleSegmentationLayer, dataset, false);
   }, [visibleSegmentationLayer, dataset, dispatch]);
 
   // Best-effort position lookup for arbitrary segment IDs, using either of
@@ -307,19 +253,6 @@ export default function PredictionsView() {
   const [contactEdges, setContactEdges] = useState<ContactEdge[]>([]);
   const [contactFileName, setContactFileName] = useState<string | null>(null);
 
-  // How many of the contact profile's neuron IDs are already in the segment
-  // list (vs. ones Run prediction will add). The segment list only contains
-  // segments the user has already interacted with, so a fresh contact profile
-  // commonly references neurons that aren't in it yet — that's expected, not
-  // an error.
-  const matchedNeuronCount = useMemo(() => {
-    if (segments == null) {
-      return 0;
-    }
-    return getDistinctNeuronIds(contactEdges).filter(
-      (id) => segments.getNullable(BigInt(id)) != null,
-    ).length;
-  }, [contactEdges, segments]);
 
   const handleContactFileChange = async (info: UploadChangeParam<UploadFile<any>>) => {
     const file = info.fileList[info.fileList.length - 1]?.originFileObj;
@@ -335,20 +268,8 @@ export default function PredictionsView() {
       }
       setContactEdges(edges);
       setContactFileName(file.name);
-      const neuronIds = getDistinctNeuronIds(edges);
-      const matchedCount =
-        segments == null
-          ? 0
-          : neuronIds.filter((id) => segments.getNullable(BigInt(id)) != null).length;
-      Toast.success(
-        skippedRowCount > 0
-          ? `Loaded ${edges.length} contact(s) across ${neuronIds.length} neuron(s) (${skippedRowCount} row(s) skipped).`
-          : `Loaded ${edges.length} contact(s) across ${neuronIds.length} neuron(s).`,
-      );
-      if (matchedCount < neuronIds.length) {
-        Toast.info(
-          `${matchedCount}/${neuronIds.length} are already in the segment list; the rest will be added when you run prediction.`,
-        );
+      if (skippedRowCount > 0) {
+        Toast.info(`Skipped ${skippedRowCount} row(s) that didn't fit the expected format.`);
       }
     } catch (exception) {
       Toast.error(
@@ -442,12 +363,7 @@ export default function PredictionsView() {
     if (visibleSegmentationLayer == null || segments == null) {
       return;
     }
-    if (contactEdges.length === 0) {
-      Toast.warning("Load a contact profile file first — its neurons are the prediction targets.");
-      return;
-    }
-    if (referenceDataset == null) {
-      Toast.warning("Select a reference dataset first.");
+    if (contactEdges.length === 0 || referenceDataset == null) {
       return;
     }
     setIsRunning(true);
@@ -480,7 +396,6 @@ export default function PredictionsView() {
           neuron_b: edge.neuronB,
           weight: edge.weight,
         })),
-        max_candidates: maxCandidates,
         reference_dataset: referenceDataset,
       };
 
@@ -520,8 +435,13 @@ export default function PredictionsView() {
     setIsUploadingOfflinePredictions(true);
     try {
       const response = await uploadOfflinePredictions(dataset.id, file);
+      // Use the filename without its extension as the solution/source name
+      // (e.g. "morphology_scores.csv" -> "morphology_scores") — shorter and
+      // more readable than the full filename wherever the source shows up
+      // (candidate tooltips, the per-source row label, raw metadata keys).
+      const sourceName = file.name.replace(/\.[^./]+$/, "");
       const { written, createdCount, positionedCount } = await writeMergedCandidates(
-        file.name,
+        sourceName,
         response.predictions,
       );
       Toast.success(
@@ -538,63 +458,6 @@ export default function PredictionsView() {
     }
   };
 
-  // Segments created by an earlier Run (before position lookup was added, or
-  // while this layer had neither a segment index nor a mesh file yet) are
-  // stuck at "position unknown" forever — Run skips them once they have any
-  // status other than "none", so it never retries the lookup for them. This
-  // action targets exactly that: existing contact-profile segments missing a
-  // position, independent of prediction status.
-  const handleBackfillPositions = async () => {
-    if (visibleSegmentationLayer == null || segments == null) {
-      return;
-    }
-    const idsMissingPosition = getDistinctNeuronIds(contactEdges)
-      .map((id) => BigInt(id))
-      .filter((id) => {
-        const segment = segments.getNullable(id);
-        return segment != null && segment.anchorPosition == null;
-      });
-    if (idsMissingPosition.length === 0) {
-      Toast.info("Every contact-profile segment already has a known position.");
-      return;
-    }
-    const capped = idsMissingPosition.length > MAX_POSITION_LOOKUPS_PER_CLICK;
-    const idsToFix = idsMissingPosition.slice(0, MAX_POSITION_LOOKUPS_PER_CLICK);
-    setIsBackfilling(true);
-    try {
-      const positionByNeuronId = await fetchAnchorPositions(idsToFix);
-      if (positionByNeuronId.size === 0) {
-        Toast.warning(
-          "Could not find a position for any of these segments — this layer may have no precomputed segment index or mesh file, or these IDs aren't in either of them.",
-        );
-        return;
-      }
-      const actions = Array.from(positionByNeuronId).map(([neuronId, anchorPosition]) =>
-        updateSegmentAction(
-          neuronId,
-          { anchorPosition },
-          visibleSegmentationLayer.name,
-          undefined,
-          false,
-        ),
-      );
-      await waitUntilRebaseFinished();
-      dispatch(batchUpdateGroupsAndSegmentsAction(actions));
-      Toast.success(
-        `Found a position for ${positionByNeuronId.size}/${idsToFix.length} segment(s).`,
-      );
-      if (capped) {
-        Toast.info(
-          `Capped at ${MAX_POSITION_LOOKUPS_PER_CLICK} per click (${idsMissingPosition.length} segment(s) missing a position). Click again to continue with the rest.`,
-        );
-      }
-    } catch (_exception) {
-      Toast.error("Could not look up segment positions.");
-    } finally {
-      setIsBackfilling(false);
-    }
-  };
-
   if (visibleSegmentationLayer == null) {
     return (
       <Empty
@@ -607,24 +470,12 @@ export default function PredictionsView() {
 
   return (
     <div style={{ padding: 12, height: "100%", overflowY: "auto" }}>
-      <Title level={5} style={{ marginTop: 0 }}>
-        Predictions
-      </Title>
-      <Text type="secondary">
-        Configure and run neuron-identity prediction. The neurons referenced in the loaded contact
-        profile are the prediction targets; confirmed identities among them are used as seeds for
-        the matcher and are left untouched. Results can be proof-read in the Proofreading tab.
-      </Text>
-
-      <Divider style={{ margin: "12px 0" }} />
-
       <Text strong style={{ display: "block", marginBottom: 4 }}>
         Contact profile
       </Text>
       <Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
-        Optional: drop a CSV/TSV file of segment contacts to use as a future input feature for the
-        predictor. Must have a header row with "neuron1" and "neuron2" columns (segment IDs); any
-        other column is read as the contact strength.
+        Upload a CSV/TSV file of segment contacts to use for ID prediction. Must have a header row
+        with "neuron1", "neuron2" (segment IDs), and "contact_strength" columns.
       </Text>
       <Upload
         name="contactProfile"
@@ -634,64 +485,24 @@ export default function PredictionsView() {
         onChange={handleContactFileChange}
         maxCount={1}
       >
-        <Button icon={<UploadOutlined />}>Select contact profile file…</Button>
+        <Button icon={<UploadOutlined />}>Upload new contact profile</Button>
       </Upload>
       {contactFileName != null && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
-          <Text style={{ flex: 1 }} ellipsis>
-            {contactFileName}: {contactEdges.length} contact(s) across{" "}
-            {countDistinctNeurons(contactEdges)} neuron(s)
-          </Text>
-          <Tooltip title="Clear contact profile">
-            <Button size="small" icon={<DeleteOutlined />} onClick={handleClearContacts} />
-          </Tooltip>
-        </div>
-      )}
-      {contactFileName != null && (
-        <Text type="secondary" style={{ display: "block", marginTop: 4, fontSize: 12 }}>
-          {matchedNeuronCount}/{countDistinctNeurons(contactEdges)} neuron ID(s) already in the
-          segment list; the rest will be added when you run prediction.
-        </Text>
-      )}
-      <Text
-        type={
-          segmentIndexStatus === "unavailable" && meshFileStatus === "unavailable"
-            ? "warning"
-            : "secondary"
-        }
-        style={{ display: "block", marginTop: 4, fontSize: 12 }}
-      >
-        Position source for this layer:{" "}
-        {segmentIndexStatus === "checking" || meshFileStatus === "checking"
-          ? "checking…"
-          : segmentIndexStatus === "available" && meshFileStatus === "available"
-            ? "segment index + mesh file available — new segments can get a real position"
-            : segmentIndexStatus === "available"
-              ? "segment index available — new segments can get a real position"
-              : meshFileStatus === "available"
-                ? "mesh file available — new segments can get a real (approximate) position"
-                : "no segment index or mesh file — new segments will have no known position ('Go to segment' won't work for them). Generate a mesh file for this dataset to enable jump-to for predicted neurons."}
-      </Text>
-      {contactFileName != null && (
-        <Tooltip
-          title={
-            allowUpdate
-              ? "Look up a real position for contact-profile segments that are missing one (e.g. from an earlier run before this lookup existed)."
-              : "Open an editable annotation to fill in positions."
-          }
-        >
-          <Button
-            size="small"
-            style={{ marginTop: 8 }}
-            disabled={
-              !allowUpdate || (segmentIndexStatus !== "available" && meshFileStatus !== "available")
-            }
-            loading={isBackfilling}
-            onClick={handleBackfillPositions}
+        <>
+          <div
+            style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}
           >
-            Fill in missing positions
-          </Button>
-        </Tooltip>
+            <Text style={{ flex: 1 }} ellipsis>
+              {contactFileName}
+            </Text>
+            <Tooltip title="Clear contact profile">
+              <Button size="small" icon={<DeleteOutlined />} onClick={handleClearContacts} />
+            </Tooltip>
+          </div>
+          <Text type="secondary" style={{ display: "block", fontSize: 12 }}>
+            {contactEdges.length} contact(s) across {countDistinctNeurons(contactEdges)} neuron(s)
+          </Text>
+        </>
       )}
 
       <Divider style={{ margin: "12px 0" }} />
@@ -714,28 +525,38 @@ export default function PredictionsView() {
         />
       </ParamRow>
 
-      <ParamRow
-        label="Max candidates / segment"
-        help="Maximum number of ranked identities returned per segment."
+      <Tooltip
+        title={
+          !allowUpdate
+            ? "Open an editable annotation to run prediction."
+            : contactEdges.length === 0
+              ? "Upload a contact profile first."
+              : referenceDataset == null
+                ? "Select a reference dataset first."
+                : undefined
+        }
       >
-        <InputNumber
-          size="small"
-          min={1}
-          max={50}
-          value={maxCandidates}
-          onChange={(value) => setMaxCandidates(value ?? 1)}
-        />
-      </ParamRow>
+        <Button
+          type="primary"
+          icon={<ThunderboltOutlined />}
+          disabled={!allowUpdate || contactEdges.length === 0 || referenceDataset == null}
+          loading={isRunning}
+          onClick={handleRun}
+          block
+        >
+          Run prediction
+        </Button>
+      </Tooltip>
 
       <Divider style={{ margin: "12px 0" }} />
 
       <Text strong style={{ display: "block", marginBottom: 4 }}>
-        Offline predictions
+        Upload Offline Predictions
       </Text>
       <Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
-        Optional: upload a CSV of candidate names computed by another method (e.g. a
-        "SEG1"/"NEURON_ID"/"score" export). Scores merge into the same candidate list as live Run
-        results, shown separately by source, so both can be compared side by side.
+        Upload a CSV with header
+        rows "seg" (segment ID), "neuron" (a neuron name), and
+        "score" columns. Filename will be used as prediction name. Ideally scores are in confidence percentage space to they can be averaged with other confidence scores.
       </Text>
       <Upload
         name="offlinePredictions"
@@ -750,29 +571,6 @@ export default function PredictionsView() {
           Upload offline predictions CSV…
         </Button>
       </Upload>
-
-      <Divider style={{ margin: "12px 0" }} />
-
-      <Tooltip
-        title={
-          !allowUpdate
-            ? "Open an editable annotation to run prediction."
-            : referenceDataset == null
-              ? "Select a reference dataset first."
-              : undefined
-        }
-      >
-        <Button
-          type="primary"
-          icon={<ThunderboltOutlined />}
-          disabled={!allowUpdate || referenceDataset == null}
-          loading={isRunning}
-          onClick={handleRun}
-          block
-        >
-          Run prediction
-        </Button>
-      </Tooltip>
     </div>
   );
 }
