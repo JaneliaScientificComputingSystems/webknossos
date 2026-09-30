@@ -1,4 +1,4 @@
-import { AimOutlined, CheckOutlined, CloseOutlined } from "@ant-design/icons";
+import { AimOutlined, CheckOutlined } from "@ant-design/icons";
 import {
   Button,
   Empty,
@@ -6,7 +6,6 @@ import {
   type MenuProps,
   Segmented,
   Select,
-  Space,
   Tabs,
   Tag,
   Tooltip,
@@ -196,7 +195,6 @@ function IdentityListItem({
     (a: Vector4, b: Vector4) => V4.isEqual(a, b),
   );
   const displayName = identity.confirmed ?? segment.name ?? null;
-  const topCandidate = topLiveCandidate(identity);
   const sourceGroups = groupCandidatesBySource(identity.candidates).map((group) => ({
     ...group,
     candidates: group.candidates.slice(0, topNPerRow),
@@ -342,31 +340,6 @@ function IdentityListItem({
         </div>
       )}
 
-      {allowUpdate && identity.candidates.length > 0 && (
-        <div style={{ marginLeft: 20, marginTop: 4 }}>
-          <Space size={4} wrap>
-            {topCandidate != null && identity.confirmed !== topCandidate.name && (
-              <Button
-                size="small"
-                type="primary"
-                icon={<CheckOutlined />}
-                onClick={() => onConfirm(segment, topCandidate.name)}
-              >
-                Accept {topCandidate.name}
-              </Button>
-            )}
-            {topCandidate != null && (
-              <Button
-                size="small"
-                icon={<CloseOutlined />}
-                onClick={() => onReject(segment, topCandidate.name)}
-              >
-                Reject {topCandidate.name}
-              </Button>
-            )}
-          </Space>
-        </div>
-      )}
     </div>
   );
 }
