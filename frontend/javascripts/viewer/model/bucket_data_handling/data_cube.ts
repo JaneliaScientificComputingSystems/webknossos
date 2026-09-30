@@ -30,6 +30,7 @@ import type {
 import { DataBucket, NULL_BUCKET, NullBucket } from "viewer/model/bucket_data_handling/bucket";
 import type PullQueue from "viewer/model/bucket_data_handling/pullqueue";
 import type PushQueue from "viewer/model/bucket_data_handling/pushqueue";
+import { registerBucketForSegmentPositionCache } from "viewer/model/bucket_data_handling/segment_position_cache";
 import TemporalBucketManager from "viewer/model/bucket_data_handling/temporal_bucket_manager";
 import type { DimensionMap } from "viewer/model/dimensions";
 import Dimensions from "viewer/model/dimensions";
@@ -379,6 +380,7 @@ class DataCube {
       this,
     );
     this.addBucketToGarbageCollection(bucket);
+    registerBucketForSegmentPositionCache(this.layerName, bucket);
     const [bucketIndex, cube] = this.getBucketIndexAndCube(address);
 
     if (bucketIndex != null && cube != null) {

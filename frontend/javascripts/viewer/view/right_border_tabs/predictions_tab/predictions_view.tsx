@@ -193,23 +193,23 @@ export default function PredictionsView() {
   }, [visibleSegmentationLayer, dataset, dispatch]);
 
   // Best-effort position lookup for arbitrary segment IDs, using either of
-  // this layer's two independent, optional precomputed sources — a segment
-  // index (bounding box per ID, batched, tried first since it's cheap) or a
-  // mesh file (chunk positions, one HTTP call per ID, tried only for IDs the
-  // segment index couldn't resolve). See MESH_POSITION_LOOKUP_PLAN.md. Returns
-  // an empty map if neither source exists, both fail, or an ID is unknown to
-  // both — callers fall back to leaving position unset.
+  // this layer's two independent, optional position sources, cheapest first:
+  // a segment index (bounding box per ID, batched, tried first since it's
+  // cheap); or a mesh file (chunk positions, one HTTP call per ID, tried only
+  // for IDs the above couldn't resolve). See MESH_POSITION_LOOKUP_PLAN.md.
+  // Returns an empty map if no source resolves an ID — callers fall back to
+  // leaving position unset. Note: segments already in the segment list get
+  // backfilled independently (and for free) by segment_position_cache.ts as
+  // soon as they're added, from buckets already loaded during this session —
+  // this function only covers the remaining, harder case of a position for a
+  // segment that cache has never seen.
   const fetchAnchorPositions = async (ids: bigint[]): Promise<Map<bigint, Vector3>> => {
     const positionByNeuronId = new Map<bigint, Vector3>();
     if (ids.length === 0 || visibleSegmentationLayer == null) {
       return positionByNeuronId;
     }
-    let remainingIds = ids;
-    const segmentIndexAvailable = await hasSegmentIndex(
-      visibleSegmentationLayer,
-      dataset,
-      annotation,
-    );
+    let remainingIds: bigint[] = ids;
+    const segmentIndexAvailable = await hasSegmentIndex(visibleSegmentationLayer, dataset, annotation);
     if (segmentIndexAvailable) {
       const finestMag = getMagInfo(visibleSegmentationLayer.mags).getFinestMag();
       const layerSourceInfo = {
@@ -227,12 +227,12 @@ export default function PredictionsView() {
       const centersOfMass = await getSegmentCentersOfMass(
         layerSourceInfo,
         finestMag,
-        ids,
+        remainingIds,
         additionalCoordinates,
         mappingName,
       );
       const stillMissing: bigint[] = [];
-      ids.forEach((neuronId, index) => {
+      remainingIds.forEach((neuronId, index) => {
         const centerOfMass = centersOfMass[index];
         if (centerOfMass == null) {
           stillMissing.push(neuronId);

@@ -12,11 +12,12 @@ import {
   Typography,
 } from "antd";
 import { ChangeColorMenuItemContent } from "components/color_picker";
+import { V4 } from "libs/mjs";
 import { useWkSelector } from "libs/react_hooks";
 import Toast from "libs/toast";
 import { type MouseEvent, useMemo, useState } from "react";
 import { useDispatch } from "react-redux";
-import type { Vector3 } from "viewer/constants";
+import type { Vector3, Vector4 } from "viewer/constants";
 import { mayEditAnnotation } from "viewer/model/accessors/annotation_accessor";
 import { getVisibleSegmentationLayer } from "viewer/model/accessors/dataset_accessor";
 import { layerToGlobalTransformedPosition } from "viewer/model/accessors/dataset_layer_transformation_accessor";
@@ -130,7 +131,10 @@ function IdentityListItem({
   onContextMenu: (event: MouseEvent<HTMLDivElement>, row: IdentityRow) => void;
 }) {
   const { segment, identity, status } = row;
-  const segmentColorRGBA = useWkSelector((state) => getSegmentColorAsRGBA(state, segment.id));
+  const segmentColorRGBA = useWkSelector(
+    (state) => getSegmentColorAsRGBA(state, segment.id),
+    (a: Vector4, b: Vector4) => V4.isEqual(a, b),
+  );
   const displayName = identity.confirmed ?? segment.name ?? null;
   const topCandidate = topLiveCandidate(identity);
   const sortedCandidates = [...identity.candidates].sort((a, b) => bestScore(b) - bestScore(a));
