@@ -49,16 +49,14 @@ import {
   type IdentityStatus,
   type SegmentIdentity,
   withConfirmedIdentity,
-  withRejectedName,
   withUnconfirmedIdentity,
-  withUnrejectedName,
 } from "./neuron_identity_metadata";
 
 const CONTEXT_MENU_OVERLAY_CLASS = "neuron-identity-context-menu-overlay";
 
 const { Text } = Typography;
 
-type FilterKey = "all" | "review" | "confirmed" | "rejected";
+type FilterKey = "all" | "review" | "confirmed";
 type SortKey = "confidence" | "id" | "name";
 
 type IdentityRow = {
@@ -70,14 +68,12 @@ type IdentityRow = {
 const STATUS_TAG_COLOR: Record<IdentityStatus, string | undefined> = {
   predicted: "blue",
   confirmed: "green",
-  rejected: "red",
   none: undefined,
 };
 
 const STATUS_LABEL: Record<IdentityStatus, string> = {
   predicted: "predicted",
   confirmed: "confirmed",
-  rejected: "rejected",
   none: "unlabeled",
 };
 
@@ -143,29 +139,13 @@ function matchesFilter(status: IdentityStatus, filter: FilterKey): boolean {
       return status === "predicted";
     case "confirmed":
       return status === "confirmed";
-    case "rejected":
-      return status === "rejected";
   }
 }
 
-function topLiveCandidate(identity: SegmentIdentity): CandidateScores | undefined {
-  const liveCandidates = identity.candidates.filter(
-    (candidate) => !identity.rejectedNames.includes(candidate.name),
-  );
-  const sources = allSourcesFor(liveCandidates);
-  return liveCandidates.sort(
-    (a, b) => averageScore(b, sources) - averageScore(a, sources),
-  )[0];
-}
-
-/** This candidate's cross-source average score (missing source = 0), for sorting/display of the top pick. */
-function topLiveCandidateAverageScore(identity: SegmentIdentity): number {
-  const liveCandidates = identity.candidates.filter(
-    (candidate) => !identity.rejectedNames.includes(candidate.name),
-  );
-  const sources = allSourcesFor(liveCandidates);
-  const top = topLiveCandidate(identity);
-  return top != null ? averageScore(top, sources) : Number.NEGATIVE_INFINITY;
+/** This segment's best candidate's cross-source average score (missing source = 0), for sorting. */
+function topCandidateAverageScore(identity: SegmentIdentity): number {
+  const top = averageCandidateRanking(identity.candidates)[0];
+  return top != null ? top.score : Number.NEGATIVE_INFINITY;
 }
 
 function IdentityListItem({
@@ -175,8 +155,6 @@ function IdentityListItem({
   topNPerRow,
   onGoTo,
   onConfirm,
-  onReject,
-  onUnreject,
   onContextMenu,
 }: {
   row: IdentityRow;
@@ -185,8 +163,6 @@ function IdentityListItem({
   topNPerRow: number;
   onGoTo: (segment: Segment) => void;
   onConfirm: (segment: Segment, name: string) => void;
-  onReject: (segment: Segment, name: string) => void;
-  onUnreject: (segment: Segment, name: string) => void;
   onContextMenu: (event: MouseEvent<HTMLDivElement>, row: IdentityRow) => void;
 }) {
   const { segment, identity, status } = row;
@@ -203,38 +179,30 @@ function IdentityListItem({
 
   const renderCandidateTag = (name: string, score: number, sourceLabel: string) => {
     const isConfirmed = identity.confirmed === name;
-    const isRejected = identity.rejectedNames.includes(name);
     return (
       <Tooltip
         key={name}
         title={
           isConfirmed
             ? "Selected identity"
-            : isRejected
-              ? "Rejected — click to reconsider"
-              : allowUpdate
-                ? `${sourceLabel}: ${formatScore(score)} — click to confirm`
-                : `${sourceLabel}: ${formatScore(score)}`
+            : allowUpdate
+              ? `${sourceLabel}: ${formatScore(score)} — click to confirm`
+              : `${sourceLabel}: ${formatScore(score)}`
         }
       >
         <Tag
-          color={isConfirmed ? "green" : isRejected ? "default" : undefined}
+          color={isConfirmed ? "green" : undefined}
           icon={isConfirmed ? <CheckOutlined /> : undefined}
           style={{
             cursor: allowUpdate ? "pointer" : "default",
             marginInlineEnd: 0,
-            ...(isRejected && { textDecoration: "line-through", opacity: 0.6 }),
             ...(isConfirmed && {
               fontWeight: 600,
               // Simulate a "pressed" button look for the chosen identity.
               boxShadow: "inset 0 1px 3px rgba(0, 0, 0, 0.3)",
             }),
           }}
-          onClick={
-            allowUpdate
-              ? () => (isRejected ? onUnreject(segment, name) : onConfirm(segment, name))
-              : undefined
-          }
+          onClick={allowUpdate ? () => onConfirm(segment, name) : undefined}
         >
           {name} {formatScore(score)}
         </Tag>
@@ -394,7 +362,7 @@ export default function NeuronIdentityView() {
         return nameA.localeCompare(nameB);
       }
       // "confidence"
-      return topLiveCandidateAverageScore(b.identity) - topLiveCandidateAverageScore(a.identity);
+      return topCandidateAverageScore(b.identity) - topCandidateAverageScore(a.identity);
     });
     return sorted;
   }, [allRows, filter, sortBy]);
@@ -412,36 +380,6 @@ export default function NeuronIdentityView() {
       updateSegmentAction(
         segment.id,
         { name, metadata: withConfirmedIdentity(segment.metadata ?? [], name) },
-        visibleSegmentationLayer.name,
-        undefined,
-        true,
-      ),
-    );
-  };
-
-  const handleReject = (segment: Segment, name: string) => {
-    if (visibleSegmentationLayer == null) {
-      return;
-    }
-    dispatch(
-      updateSegmentAction(
-        segment.id,
-        { metadata: withRejectedName(segment.metadata ?? [], name) },
-        visibleSegmentationLayer.name,
-        undefined,
-        true,
-      ),
-    );
-  };
-
-  const handleUnreject = (segment: Segment, name: string) => {
-    if (visibleSegmentationLayer == null) {
-      return;
-    }
-    dispatch(
-      updateSegmentAction(
-        segment.id,
-        { metadata: withUnrejectedName(segment.metadata ?? [], name) },
         visibleSegmentationLayer.name,
         undefined,
         true,
@@ -564,24 +502,6 @@ export default function NeuronIdentityView() {
             onClick: withHide(() => handleConfirm(segment, candidate.name)),
           })),
         });
-        items.push({
-          key: "rejectCandidate",
-          label: "Reject name",
-          children: identity.candidates.map((candidate) => {
-            const isRejected = identity.rejectedNames.includes(candidate.name);
-            return {
-              key: `reject-${candidate.name}`,
-              label: isRejected
-                ? `${candidate.name} (rejected — click to reconsider)`
-                : candidate.name,
-              onClick: withHide(() =>
-                isRejected
-                  ? handleUnreject(segment, candidate.name)
-                  : handleReject(segment, candidate.name),
-              ),
-            };
-          }),
-        });
       }
       if (identity.confirmed != null) {
         items.push({
@@ -686,7 +606,6 @@ export default function NeuronIdentityView() {
                 { label: "All", value: "all" },
                 { label: "Review", value: "review" },
                 { label: "Confirmed", value: "confirmed" },
-                { label: "Rejected", value: "rejected" },
               ]}
             />
             <Select<SortKey>
@@ -733,8 +652,6 @@ export default function NeuronIdentityView() {
                 topNPerRow={topNPerRow}
                 onGoTo={handleGoTo}
                 onConfirm={handleConfirm}
-                onReject={handleReject}
-                onUnreject={handleUnreject}
                 onContextMenu={onRowContextMenu}
               />
             ))
