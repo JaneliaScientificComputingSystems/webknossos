@@ -1,15 +1,14 @@
 /*
- * Client for the standalone `tools/neuron_identity_service`, which predicts
- * identities for a whole contactome in a single call. The types below mirror
- * that service's `app/schemas.py` field-for-field — read that file directly
- * if this drifts, rather than trusting this comment.
+ * Client for the standalone neuron-identity prediction service (see
+ * celegans_contactome/service), which predicts identities for a whole
+ * contactome in a single call. The types below mirror that service's
+ * `app/schemas.py` field-for-field — read that file directly if this drifts,
+ * rather than trusting this comment.
  *
  * Plain `fetch` is used deliberately instead of WK's `Request` helper
  * (libs/request.ts): that helper is geared toward WK's own authenticated
  * endpoints, and this service takes no WK token by design.
  */
-import type { IdentityCandidate } from "viewer/view/right_border_tabs/neuron_identity_tab/neuron_identity_metadata";
-
 export type PredictionServiceInputSegment = {
   id: number;
   name?: string | null;
@@ -27,17 +26,32 @@ export type PredictRequestPayload = {
   contact_edges: PredictionServiceContactEdge[];
   exclude_assigned_names?: boolean;
   max_candidates?: number;
-  model?: string;
+  reference_dataset: string;
+};
+
+export type ServiceCandidate = {
+  name: string;
+  score: number;
 };
 
 export type SegmentPredictionPayload = {
   segment_id: number;
-  candidates: IdentityCandidate[];
+  candidates: ServiceCandidate[];
 };
 
 export type PredictResponsePayload = {
-  model: string;
+  reference_dataset: string;
   predictions: SegmentPredictionPayload[];
+};
+
+export type OfflinePredictionsPayload = {
+  dataset_id: string;
+  predictions: SegmentPredictionPayload[];
+};
+
+export type ReferenceDatasetNeuronsPayload = {
+  reference_dataset: string;
+  neuron_names: string[];
 };
 
 const DEFAULT_BASE_URL = "http://localhost:8010";
@@ -46,18 +60,12 @@ function getBaseUrl(): string {
   return import.meta.env.VITE_PREDICTION_SERVICE_URL ?? DEFAULT_BASE_URL;
 }
 
-/** POST to the service's /predict endpoint. Rejects with a descriptive error on network failure or a non-2xx response. */
-export async function requestPredictions(
-  payload: PredictRequestPayload,
-): Promise<PredictResponsePayload> {
+/** Shared fetch + error handling for calls against the prediction service. Rejects with a descriptive error on network failure or a non-2xx response. */
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const baseUrl = getBaseUrl();
   let response: Response;
   try {
-    response = await fetch(`${baseUrl}/predict`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    response = await fetch(`${baseUrl}${path}`, init);
   } catch (exception) {
     throw new Error(
       `Could not reach the prediction service at ${baseUrl} (${
@@ -73,5 +81,50 @@ export async function requestPredictions(
       }`,
     );
   }
-  return (await response.json()) as PredictResponsePayload;
+  return (await response.json()) as T;
+}
+
+/** POST to the service's /predict endpoint. */
+export async function requestPredictions(
+  payload: PredictRequestPayload,
+): Promise<PredictResponsePayload> {
+  return fetchJson<PredictResponsePayload>("/predict", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+/** GET the list of reference datasets (developmental stages) the service can match against. */
+export async function getReferenceDatasets(): Promise<string[]> {
+  return fetchJson<string[]>("/reference_datasets");
+}
+
+/** GET the neuron names known to a given reference dataset, e.g. for validating/autocompleting confirmed names. */
+export async function getReferenceDatasetNeurons(
+  referenceDataset: string,
+): Promise<ReferenceDatasetNeuronsPayload> {
+  return fetchJson<ReferenceDatasetNeuronsPayload>(
+    `/reference_datasets/${encodeURIComponent(referenceDataset)}/neurons`,
+  );
+}
+
+/** PUT a CSV of externally-computed candidate predictions ("SEG1"/"NEURON_ID"/"score" columns), stored server-side per datasetId. */
+export async function uploadOfflinePredictions(
+  datasetId: string,
+  file: File,
+): Promise<OfflinePredictionsPayload> {
+  const formData = new FormData();
+  formData.append("file", file);
+  return fetchJson<OfflinePredictionsPayload>(
+    `/offline_predictions/${encodeURIComponent(datasetId)}`,
+    { method: "PUT", body: formData },
+  );
+}
+
+/** GET the previously-uploaded offline predictions for a dataset, if any. */
+export async function getOfflinePredictions(datasetId: string): Promise<OfflinePredictionsPayload> {
+  return fetchJson<OfflinePredictionsPayload>(
+    `/offline_predictions/${encodeURIComponent(datasetId)}`,
+  );
 }
