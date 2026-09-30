@@ -2,6 +2,7 @@ import { AimOutlined, CheckOutlined, CloseOutlined } from "@ant-design/icons";
 import {
   Button,
   Empty,
+  InputNumber,
   type MenuProps,
   Segmented,
   Select,
@@ -43,7 +44,6 @@ import { getContextMenuPositionFromEvent } from "viewer/view/context_menu/helper
 import PredictionsView from "viewer/view/right_border_tabs/predictions_tab/predictions_view";
 import { ContextMenuContainer } from "viewer/view/right_border_tabs/sidebar_context_menu";
 import {
-  bestScore,
   type CandidateScores,
   getIdentityStatus,
   getSegmentIdentity,
@@ -86,10 +86,54 @@ function formatScore(score: number): string {
   return Number.isFinite(score) ? `${Math.round(score * 100)}%` : "–";
 }
 
-function formatSourceScores(candidate: CandidateScores): string {
-  return Object.entries(candidate.scoresBySource)
-    .map(([source, score]) => `${source}: ${formatScore(score)}`)
-    .join(", ");
+/** All sources with a score for ANY candidate of this segment — the denominator for averageScore. */
+function allSourcesFor(candidates: CandidateScores[]): string[] {
+  const sources = new Set<string>();
+  for (const candidate of candidates) {
+    for (const source of Object.keys(candidate.scoresBySource)) {
+      sources.add(source);
+    }
+  }
+  return Array.from(sources);
+}
+
+/** Average of this candidate's score across every source present for the segment, missing = 0. */
+function averageScore(candidate: CandidateScores, sources: string[]): number {
+  if (sources.length === 0) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const total = sources.reduce((sum, source) => sum + (candidate.scoresBySource[source] ?? 0), 0);
+  return total / sources.length;
+}
+
+/** All candidates regrouped by source, each source's candidates sorted by that source's own score. */
+function groupCandidatesBySource(
+  candidates: CandidateScores[],
+): { source: string; candidates: { name: string; score: number }[] }[] {
+  const namesBySource = new Map<string, { name: string; score: number }[]>();
+  for (const candidate of candidates) {
+    for (const [source, score] of Object.entries(candidate.scoresBySource)) {
+      const list = namesBySource.get(source) ?? [];
+      list.push({ name: candidate.name, score });
+      namesBySource.set(source, list);
+    }
+  }
+  return Array.from(namesBySource.entries())
+    .map(([source, names]) => ({
+      source,
+      candidates: names.sort((a, b) => b.score - a.score),
+    }))
+    .sort((a, b) => a.source.localeCompare(b.source));
+}
+
+/** Candidate names ranked by their cross-source average score (missing source = 0), for the "average" summary row. */
+function averageCandidateRanking(
+  candidates: CandidateScores[],
+): { name: string; score: number }[] {
+  const sources = allSourcesFor(candidates);
+  return candidates
+    .map((candidate) => ({ name: candidate.name, score: averageScore(candidate, sources) }))
+    .sort((a, b) => b.score - a.score);
 }
 
 function matchesFilter(status: IdentityStatus, filter: FilterKey): boolean {
@@ -106,15 +150,30 @@ function matchesFilter(status: IdentityStatus, filter: FilterKey): boolean {
 }
 
 function topLiveCandidate(identity: SegmentIdentity): CandidateScores | undefined {
-  return identity.candidates
-    .filter((candidate) => !identity.rejectedNames.includes(candidate.name))
-    .sort((a, b) => bestScore(b) - bestScore(a))[0];
+  const liveCandidates = identity.candidates.filter(
+    (candidate) => !identity.rejectedNames.includes(candidate.name),
+  );
+  const sources = allSourcesFor(liveCandidates);
+  return liveCandidates.sort(
+    (a, b) => averageScore(b, sources) - averageScore(a, sources),
+  )[0];
+}
+
+/** This candidate's cross-source average score (missing source = 0), for sorting/display of the top pick. */
+function topLiveCandidateAverageScore(identity: SegmentIdentity): number {
+  const liveCandidates = identity.candidates.filter(
+    (candidate) => !identity.rejectedNames.includes(candidate.name),
+  );
+  const sources = allSourcesFor(liveCandidates);
+  const top = topLiveCandidate(identity);
+  return top != null ? averageScore(top, sources) : Number.NEGATIVE_INFINITY;
 }
 
 function IdentityListItem({
   row,
   allowUpdate,
   isActive,
+  topNPerRow,
   onGoTo,
   onConfirm,
   onReject,
@@ -124,6 +183,7 @@ function IdentityListItem({
   row: IdentityRow;
   allowUpdate: boolean;
   isActive: boolean;
+  topNPerRow: number;
   onGoTo: (segment: Segment) => void;
   onConfirm: (segment: Segment, name: string) => void;
   onReject: (segment: Segment, name: string) => void;
@@ -137,7 +197,52 @@ function IdentityListItem({
   );
   const displayName = identity.confirmed ?? segment.name ?? null;
   const topCandidate = topLiveCandidate(identity);
-  const sortedCandidates = [...identity.candidates].sort((a, b) => bestScore(b) - bestScore(a));
+  const sourceGroups = groupCandidatesBySource(identity.candidates).map((group) => ({
+    ...group,
+    candidates: group.candidates.slice(0, topNPerRow),
+  }));
+  const averageRanking = averageCandidateRanking(identity.candidates).slice(0, topNPerRow);
+
+  const renderCandidateTag = (name: string, score: number, sourceLabel: string) => {
+    const isConfirmed = identity.confirmed === name;
+    const isRejected = identity.rejectedNames.includes(name);
+    return (
+      <Tooltip
+        key={name}
+        title={
+          isConfirmed
+            ? "Selected identity"
+            : isRejected
+              ? "Rejected — click to reconsider"
+              : allowUpdate
+                ? `${sourceLabel}: ${formatScore(score)} — click to confirm`
+                : `${sourceLabel}: ${formatScore(score)}`
+        }
+      >
+        <Tag
+          color={isConfirmed ? "green" : isRejected ? "default" : undefined}
+          icon={isConfirmed ? <CheckOutlined /> : undefined}
+          style={{
+            cursor: allowUpdate ? "pointer" : "default",
+            marginInlineEnd: 0,
+            ...(isRejected && { textDecoration: "line-through", opacity: 0.6 }),
+            ...(isConfirmed && {
+              fontWeight: 600,
+              // Simulate a "pressed" button look for the chosen identity.
+              boxShadow: "inset 0 1px 3px rgba(0, 0, 0, 0.3)",
+            }),
+          }}
+          onClick={
+            allowUpdate
+              ? () => (isRejected ? onUnreject(segment, name) : onConfirm(segment, name))
+              : undefined
+          }
+        >
+          {name} {formatScore(score)}
+        </Tag>
+      </Tooltip>
+    );
+  };
 
   return (
     <div
@@ -199,55 +304,45 @@ function IdentityListItem({
         </Tag>
       </div>
 
-      {sortedCandidates.length > 0 && (
-        <div style={{ margin: "6px 0 4px 20px", display: "flex", flexWrap: "wrap", gap: 4 }}>
-          {sortedCandidates.map((candidate) => {
-            const isConfirmed = identity.confirmed === candidate.name;
-            const isRejected = identity.rejectedNames.includes(candidate.name);
-            return (
-              <Tooltip
-                key={candidate.name}
-                title={
-                  allowUpdate
-                    ? isConfirmed
-                      ? "Selected identity"
-                      : isRejected
-                        ? "Rejected — click to reconsider"
-                        : `Scores — ${formatSourceScores(candidate)}`
-                    : formatSourceScores(candidate)
-                }
+      {(averageRanking.length > 0 || sourceGroups.length > 0) && (
+        <div style={{ margin: "6px 0 4px 20px" }}>
+          {averageRanking.length > 0 && (
+            <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginBottom: 2 }}>
+              <Text
+                strong
+                style={{ fontSize: 11, flex: "0 0 auto", maxWidth: 100 }}
+                ellipsis
+                title="Average across all sources (missing source counts as 0)"
               >
-                <Tag
-                  color={isConfirmed ? "green" : isRejected ? "default" : undefined}
-                  icon={isConfirmed ? <CheckOutlined /> : undefined}
-                  style={{
-                    cursor: allowUpdate ? "pointer" : "default",
-                    marginInlineEnd: 0,
-                    ...(isRejected && { textDecoration: "line-through", opacity: 0.6 }),
-                    ...(isConfirmed && {
-                      fontWeight: 600,
-                      // Simulate a "pressed" button look for the chosen identity.
-                      boxShadow: "inset 0 1px 3px rgba(0, 0, 0, 0.3)",
-                    }),
-                  }}
-                  onClick={
-                    allowUpdate
-                      ? () =>
-                          isRejected
-                            ? onUnreject(segment, candidate.name)
-                            : onConfirm(segment, candidate.name)
-                      : undefined
-                  }
-                >
-                  {candidate.name} {formatScore(bestScore(candidate))}
-                </Tag>
-              </Tooltip>
-            );
-          })}
+                average
+              </Text>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                {averageRanking.map(({ name, score }) => renderCandidateTag(name, score, "average"))}
+              </div>
+            </div>
+          )}
+          {sourceGroups.map(({ source, candidates }) => (
+            <div
+              key={source}
+              style={{ display: "flex", alignItems: "baseline", gap: 4, marginBottom: 2 }}
+            >
+              <Text
+                type="secondary"
+                style={{ fontSize: 11, flex: "0 0 auto", maxWidth: 100 }}
+                ellipsis
+                title={source}
+              >
+                {source}
+              </Text>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                {candidates.map(({ name, score }) => renderCandidateTag(name, score, source))}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
-      {allowUpdate && sortedCandidates.length > 0 && (
+      {allowUpdate && identity.candidates.length > 0 && (
         <div style={{ marginLeft: 20, marginTop: 4 }}>
           <Space size={4} wrap>
             {topCandidate != null && identity.confirmed !== topCandidate.name && (
@@ -280,6 +375,7 @@ export default function NeuronIdentityView() {
   const dispatch = useDispatch();
   const [filter, setFilter] = useState<FilterKey>("all");
   const [sortBy, setSortBy] = useState<SortKey>("confidence");
+  const [topNPerRow, setTopNPerRow] = useState(3);
   const [contextMenuPosition, setContextMenuPosition] = useState<[number, number] | null>(null);
   const [contextMenu, setContextMenu] = useState<MenuProps | null>(null);
   const [subTab, setSubTab] = useState<"proofread" | "predictions">("proofread");
@@ -325,10 +421,7 @@ export default function NeuronIdentityView() {
         return nameA.localeCompare(nameB);
       }
       // "confidence"
-      const topA = topLiveCandidate(a.identity);
-      const topB = topLiveCandidate(b.identity);
-      return (topB != null ? bestScore(topB) : Number.NEGATIVE_INFINITY) -
-        (topA != null ? bestScore(topA) : Number.NEGATIVE_INFINITY);
+      return topLiveCandidateAverageScore(b.identity) - topLiveCandidateAverageScore(a.identity);
     });
     return sorted;
   }, [allRows, filter, sortBy]);
@@ -486,12 +579,15 @@ export default function NeuronIdentityView() {
     if (allowUpdate) {
       items.push({ type: "divider" });
       if (identity.candidates.length > 0) {
+        const averageScoreByName = new Map(
+          averageCandidateRanking(identity.candidates).map((c) => [c.name, c.score]),
+        );
         items.push({
           key: "confirmCandidate",
           label: "Confirm identity",
           children: identity.candidates.map((candidate) => ({
             key: `confirm-${candidate.name}`,
-            label: `${candidate.name} ${formatScore(bestScore(candidate))}`,
+            label: `${candidate.name} ${formatScore(averageScoreByName.get(candidate.name) ?? Number.NEGATIVE_INFINITY)}`,
             onClick: withHide(() => handleConfirm(segment, candidate.name)),
           })),
         });
@@ -631,6 +727,17 @@ export default function NeuronIdentityView() {
                 { label: "Sort: name", value: "name" },
               ]}
             />
+            <Tooltip title="Show at most this many candidates per row (per source, and in the average row).">
+              <InputNumber
+                size="small"
+                min={1}
+                max={50}
+                value={topNPerRow}
+                onChange={(value) => setTopNPerRow(value ?? 1)}
+                addonBefore="Top N"
+                style={{ width: 110 }}
+              />
+            </Tooltip>
           </div>
         </div>
 
@@ -650,6 +757,7 @@ export default function NeuronIdentityView() {
                 row={row}
                 allowUpdate={allowUpdate}
                 isActive={activeCellId === row.segment.id}
+                topNPerRow={topNPerRow}
                 onGoTo={handleGoTo}
                 onConfirm={handleConfirm}
                 onReject={handleReject}
