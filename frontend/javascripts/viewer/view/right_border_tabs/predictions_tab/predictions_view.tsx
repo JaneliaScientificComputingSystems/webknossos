@@ -1,6 +1,6 @@
 import { DeleteOutlined, ThunderboltOutlined, UploadOutlined } from "@ant-design/icons";
 import { getMeshFileChunksForSegment } from "admin/api/mesh";
-import { getSegmentBoundingBoxes } from "admin/rest_api";
+import { getSegmentCentersOfMass } from "admin/rest_api";
 import { Button, Divider, Empty, InputNumber, Select, Tooltip, Typography, Upload } from "antd";
 import type { UploadChangeParam, UploadFile } from "antd/lib/upload";
 import { useWkSelector } from "libs/react_hooks";
@@ -20,7 +20,6 @@ import type { Action } from "viewer/model/actions/actions";
 import { dispatchMaybeFetchMeshFilesAsync } from "viewer/model/actions/annotation_actions";
 import { updateSegmentAction } from "viewer/model/actions/volumetracing_actions";
 import { waitUntilRebaseFinished } from "viewer/model/helpers/bounding_box_creation_helpers";
-import { getBoundingBoxInMag1 } from "viewer/model/sagas/volume/helpers";
 import {
   getSegmentIdentity,
   withMergedCandidates,
@@ -219,26 +218,30 @@ export default function PredictionsView() {
         tracingId: visibleSegmentationLayer.tracingId ?? undefined,
         segmentationLayerName: visibleSegmentationLayer.name,
       };
-      const boundingBoxes = await getSegmentBoundingBoxes(
+      // Voxel-weighted center of mass, not a bounding-box midpoint: for a
+      // concave/ring-shaped segment (e.g. neurons wrapped around a lumen),
+      // the geometric center of its bounding box can fall in empty space
+      // that isn't part of the segment at all. Center of mass is far more
+      // likely to land on real segment voxels, though still not a hard
+      // guarantee for pathological shapes.
+      const centersOfMass = await getSegmentCentersOfMass(
         layerSourceInfo,
         finestMag,
         ids,
         additionalCoordinates,
         mappingName,
-        annotation.version,
       );
       const stillMissing: bigint[] = [];
       ids.forEach((neuronId, index) => {
-        const boundingBox = boundingBoxes[index];
-        if (boundingBox == null) {
+        const centerOfMass = centersOfMass[index];
+        if (centerOfMass == null) {
           stillMissing.push(neuronId);
           return;
         }
-        const boundingBoxInMag1 = getBoundingBoxInMag1(boundingBox, finestMag);
         positionByNeuronId.set(neuronId, [
-          Math.round(boundingBoxInMag1.topLeft[0] + boundingBoxInMag1.width / 2),
-          Math.round(boundingBoxInMag1.topLeft[1] + boundingBoxInMag1.height / 2),
-          Math.round(boundingBoxInMag1.topLeft[2] + boundingBoxInMag1.depth / 2),
+          Math.round(centerOfMass[0] * finestMag[0]),
+          Math.round(centerOfMass[1] * finestMag[1]),
+          Math.round(centerOfMass[2] * finestMag[2]),
         ]);
       });
       remainingIds = stillMissing;
@@ -258,13 +261,17 @@ export default function PredictionsView() {
   };
 
   // Approximates a segment's position from its mesh file's chunk metadata,
-  // without fetching or decoding any mesh geometry. There's no single
-  // centroid/bbox field in the response, so this takes the coarsest LOD
-  // (highest index — see NeuroglancerMeshHelper.scala, index 0 is finest and
-  // increasing index is coarser, so the last LOD has the fewest chunks and is
-  // cheapest to enumerate) and centers a bounding box over its chunk
-  // positions. Approximate by construction — fine for "jump to", not for
-  // anything precision-sensitive.
+  // without fetching or decoding any mesh geometry. Each listed chunk is the
+  // origin corner of an octree cell that the meshing algorithm found actual
+  // segment surface within (see NeuroglancerMeshHelper.scala) — i.e. it's a
+  // real, guaranteed-on-segment point, unlike a bounding-box midpoint across
+  // multiple chunks, which can land in empty space between two lobes of a
+  // branching/non-convex segment. So: pick ONE real chunk position directly
+  // rather than averaging several into a synthetic point. Takes the coarsest
+  // LOD (highest index — index 0 is finest, increasing index is coarser, so
+  // the last LOD has the fewest chunks and is cheapest to enumerate); which
+  // specific chunk is picked doesn't matter for correctness, only for how
+  // close to this segment's "middle" the jump lands.
   const fetchAnchorPositionFromMeshFile = async (neuronId: bigint): Promise<Vector3 | null> => {
     if (visibleSegmentationLayer == null || currentMeshFile == null) {
       return null;
@@ -281,23 +288,8 @@ export default function PredictionsView() {
         annotation.version,
       );
       const coarsestLod = segmentInfo.lods.at(-1);
-      if (coarsestLod == null || coarsestLod.chunks.length === 0) {
-        return null;
-      }
-      const positions = coarsestLod.chunks.map((chunk) => chunk.position);
-      const min: Vector3 = [...positions[0]];
-      const max: Vector3 = [...positions[0]];
-      for (const position of positions) {
-        for (let axis = 0; axis < 3; axis++) {
-          if (position[axis] < min[axis]) min[axis] = position[axis];
-          if (position[axis] > max[axis]) max[axis] = position[axis];
-        }
-      }
-      return [
-        Math.round((min[0] + max[0]) / 2),
-        Math.round((min[1] + max[1]) / 2),
-        Math.round((min[2] + max[2]) / 2),
-      ];
+      const chunk = coarsestLod?.chunks[Math.floor(coarsestLod.chunks.length / 2)];
+      return chunk?.position ?? null;
     } catch (_exception) {
       return null;
     }
