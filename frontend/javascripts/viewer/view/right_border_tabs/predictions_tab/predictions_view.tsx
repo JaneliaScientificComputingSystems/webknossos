@@ -205,13 +205,6 @@ export default function PredictionsView() {
 
       <Divider style={{ margin: "12px 0" }} />
 
-      <Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
-        Run prediction{selectedReferenceDatasets.size > 1 ? "s" : ""} from the button above
-        Confirmed IDs, once a contact profile and at least one reference dataset are ready.
-      </Text>
-
-      <Divider style={{ margin: "12px 0" }} />
-
       <Text strong style={{ display: "block", marginBottom: 4 }}>
         Upload Offline Predictions
       </Text>

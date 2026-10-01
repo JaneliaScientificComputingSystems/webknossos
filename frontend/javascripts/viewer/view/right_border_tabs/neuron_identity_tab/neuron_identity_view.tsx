@@ -815,7 +815,7 @@ function NeuronIdentityPanel() {
   const dispatch = useDispatch();
   const [contextMenuPosition, setContextMenuPosition] = useState<[number, number] | null>(null);
   const [contextMenu, setContextMenu] = useState<MenuProps | null>(null);
-  const [subTab, setSubTab] = useState<"predictions" | "searchByName">("predictions");
+  const [subTab, setSubTab] = useState<"predictions" | "searchByName">("searchByName");
   // Search by Name's query, lifted here so clicking a candidate tag anywhere
   // (including the main Proofreading list) can populate it and jump to that
   // tab, not just from within Search by Name's own result rows.
@@ -1184,8 +1184,8 @@ function NeuronIdentityPanel() {
         size="small"
         tabBarStyle={{ paddingInline: 8, marginBottom: 0 }}
         items={[
-          { key: "predictions", label: "Predict IDs" },
           { key: "searchByName", label: "Proofread IDs" },
+          { key: "predictions", label: "Configuration" },
         ]}
       />
 
