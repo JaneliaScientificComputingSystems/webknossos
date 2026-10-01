@@ -209,7 +209,7 @@ function IdentityListItem({
         key={name}
         title={
           allowUpdate
-            ? `Click to search — double-click to ${isConfirmed ? "unconfirm" : "confirm"}`
+            ? `Click to search — right-click to ${isConfirmed ? "unconfirm" : "confirm"}`
             : "Click to search"
         }
       >
@@ -221,6 +221,7 @@ function IdentityListItem({
             marginInlineEnd: 0,
             flexShrink: 0,
             ...(isConfirmed && {
+              color: "black",
               fontWeight: 600,
               // Simulate a "pressed" button look for the chosen identity.
               boxShadow: "inset 0 1px 3px rgba(0, 0, 0, 0.3)",
@@ -232,9 +233,20 @@ function IdentityListItem({
               }),
           }}
           onClick={() => onSearchName(name)}
-          onDoubleClick={
+          onContextMenu={
             allowUpdate
-              ? () => (isConfirmed ? onUnconfirm(segment) : onConfirm(segment, name))
+              ? (event) => {
+                  // Confirm/unconfirm instead of opening the row's own
+                  // context menu (bound on the row div this tag sits
+                  // inside) — stop it from bubbling up.
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (isConfirmed) {
+                    onUnconfirm(segment);
+                  } else {
+                    onConfirm(segment, name);
+                  }
+                }
               : undefined
           }
         >
@@ -278,13 +290,16 @@ function IdentityListItem({
             onClick={() => onGoTo(segment)}
           />
         </Tooltip>
-        <Text type="secondary" style={{ fontVariantNumeric: "tabular-nums" }}>
+        <Text style={{ fontVariantNumeric: "tabular-nums" }}>
           #{segment.id}
         </Text>
         <Text strong ellipsis style={{ flex: 1 }}>
-          {displayName ?? <Text type="secondary">unnamed</Text>}
+          {displayName ?? <Text>unnamed</Text>}
         </Text>
-        <Tag color={STATUS_TAG_COLOR[status]} style={{ marginInlineEnd: 0 }}>
+        <Tag
+          color={STATUS_TAG_COLOR[status]}
+          style={{ marginInlineEnd: 0, ...(status === "confirmed" && { color: "black" }) }}
+        >
           {STATUS_LABEL[status]}
         </Tag>
       </div>
@@ -295,7 +310,7 @@ function IdentityListItem({
             <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginBottom: 2 }}>
               <Text
                 strong
-                style={{ fontSize: 11, flex: "0 0 auto", maxWidth: 100 }}
+                style={{ fontSize: 14, flex: "0 0 auto", maxWidth: 160 }}
                 ellipsis
                 title="Average across all sources (missing source counts as 0)"
               >
@@ -312,8 +327,7 @@ function IdentityListItem({
               style={{ display: "flex", alignItems: "baseline", gap: 4, marginBottom: 2 }}
             >
               <Text
-                type="secondary"
-                style={{ fontSize: 11, flex: "0 0 auto", maxWidth: 100 }}
+                style={{ fontSize: 14, flex: "0 0 auto", maxWidth: 160 }}
                 ellipsis
                 title={source}
               >
@@ -409,19 +423,19 @@ function SearchByNameView({
     if (trimmedQuery.length === 0) {
       return [];
     }
-    return allRows
-      .filter((row) => Number.isFinite(averageScoreForName(row.identity, trimmedQuery)))
-      .filter(
-        (row) =>
-          includeConfirmedElsewhere ||
-          row.identity.confirmed == null ||
-          row.identity.confirmed === trimmedQuery,
-      )
-      .sort(
-        (a, b) =>
-          averageScoreForName(b.identity, trimmedQuery) -
-          averageScoreForName(a.identity, trimmedQuery),
+    let filtered = allRows.filter((row) =>
+      Number.isFinite(averageScoreForName(row.identity, trimmedQuery)),
+    );
+    if (!includeConfirmedElsewhere) {
+      filtered = filtered.filter(
+        (row) => row.identity.confirmed == null || row.identity.confirmed === trimmedQuery,
       );
+    }
+    return [...filtered].sort(
+      (a, b) =>
+        averageScoreForName(b.identity, trimmedQuery) -
+        averageScoreForName(a.identity, trimmedQuery),
+    );
   }, [allRows, trimmedQuery, includeConfirmedElsewhere]);
 
   return (
@@ -438,7 +452,7 @@ function SearchByNameView({
           options={nameOptions}
           filterOption={false}
           size="small"
-          placeholder="Neuron name…"
+          placeholder="Name…"
           style={{ width: "100%" }}
         />
         <Checkbox
@@ -470,7 +484,7 @@ function SearchByNameView({
               row={row}
               allowUpdate={allowUpdate}
               isActive={activeCellId === row.segment.id}
-              highlightName={trimmedQuery}
+              highlightName={trimmedQuery.length > 0 ? trimmedQuery : undefined}
               onGoTo={onGoTo}
               onConfirm={onConfirm}
               onUnconfirm={onUnconfirm}
@@ -512,32 +526,75 @@ function CurrentSegmentView({
   onSearchName: (name: string) => void;
   onContextMenu: (event: MouseEvent<HTMLDivElement>, row: IdentityRow) => void;
 }) {
+  const [segmentIdQuery, setSegmentIdQuery] = useState("");
+
+  const knownSegmentIds = useMemo(
+    () => allRows.map((row) => row.segment.id.toString()).sort(),
+    [allRows],
+  );
+
+  const segmentIdOptions = useMemo(() => {
+    const trimmed = segmentIdQuery.trim();
+    const filtered =
+      trimmed.length === 0
+        ? knownSegmentIds
+        : knownSegmentIds.filter((id) => id.startsWith(trimmed));
+    return filtered.map((id) => ({ value: id }));
+  }, [knownSegmentIds, segmentIdQuery]);
+
+  // Typing a segment ID here SELECTS it — same setSelectedSegmentsOrGroupAction
+  // dispatch as clicking it in the viewport/panel (via onGoTo) — rather than
+  // just locally overriding what this view displays. That keeps "current
+  // segment" meaning one single thing everywhere (the shared selectedIds
+  // store state), instead of this box silently diverging from it.
+  const handleSegmentIdChange = (value: string) => {
+    setSegmentIdQuery(value);
+    const trimmed = value.trim();
+    if (!/^\d+$/.test(trimmed)) {
+      return;
+    }
+    const segmentId = BigInt(trimmed);
+    const matchingRow = allRows.find((row) => row.segment.id === segmentId);
+    if (matchingRow != null) {
+      onGoTo(matchingRow.segment);
+    }
+  };
+
   const currentRow =
     selectedSegmentId != null
       ? allRows.find((row) => row.segment.id === selectedSegmentId)
       : undefined;
 
-  if (currentRow == null) {
-    return (
-      <Empty
-        image={Empty.PRESENTED_IMAGE_SIMPLE}
-        description="Click a segment in the data viewport or the Segments panel to see it here."
-        style={{ marginTop: 40 }}
-      />
-    );
-  }
-
   return (
-    <IdentityListItem
-      row={currentRow}
-      allowUpdate={allowUpdate}
-      isActive
-      onGoTo={onGoTo}
-      onConfirm={onConfirm}
-      onUnconfirm={onUnconfirm}
-      onSearchName={onSearchName}
-      onContextMenu={onContextMenu}
-    />
+    <div>
+      <AutoComplete
+        value={segmentIdQuery}
+        onChange={handleSegmentIdChange}
+        options={segmentIdOptions}
+        filterOption={false}
+        size="small"
+        placeholder="Select segment by ID…"
+        style={{ width: "100%", marginBottom: 8 }}
+      />
+      {currentRow == null ? (
+        <Empty
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description="Click a segment in the data viewport or the Segments panel, or enter its ID above."
+          style={{ marginTop: 40 }}
+        />
+      ) : (
+        <IdentityListItem
+          row={currentRow}
+          allowUpdate={allowUpdate}
+          isActive
+          onGoTo={onGoTo}
+          onConfirm={onConfirm}
+          onUnconfirm={onUnconfirm}
+          onSearchName={onSearchName}
+          onContextMenu={onContextMenu}
+        />
+      )}
+    </div>
   );
 }
 
@@ -897,7 +954,7 @@ export default function NeuronIdentityView() {
             borderBottom: "1px solid var(--color-wk-border, rgba(128,128,128,0.2))",
           }}
         >
-          <Text type="secondary" style={{ display: "block" }}>
+          <Text style={{ display: "block" }}>
             {confirmedCount} / {allRows.length} confirmed
           </Text>
           <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
@@ -967,10 +1024,10 @@ export default function NeuronIdentityView() {
           iconPosition="end"
           onClick={() => setIsConfirmedIdsExpanded((expanded) => !expanded)}
         >
-          Confirmed IDs ({confirmedCount})
+          Confirmed IDs ({confirmedCount}/{allRows.length})
         </Button>
         {isConfirmedIdsExpanded && confirmedCount === 0 && (
-          <Text type="secondary" style={{ display: "block", fontSize: 12, marginTop: 4 }}>
+          <Text style={{ display: "block", fontSize: 12, marginTop: 4 }}>
             No confirmed identities yet.
           </Text>
         )}
@@ -986,16 +1043,21 @@ export default function NeuronIdentityView() {
                 <Tooltip
                   key={row.segment.id}
                   title={
-                    allowUpdate
-                      ? "Click to select — double-click to unconfirm"
-                      : "Click to select"
+                    allowUpdate ? "Click to select — right-click to unconfirm" : "Click to select"
                   }
                 >
                   <Tag
                     color="green"
-                    style={{ cursor: "pointer" }}
+                    style={{ cursor: "pointer", color: "black" }}
                     onClick={() => handleGoTo(row.segment)}
-                    onDoubleClick={allowUpdate ? () => handleResetDecision(row.segment) : undefined}
+                    onContextMenu={
+                      allowUpdate
+                        ? (event) => {
+                            event.preventDefault();
+                            handleResetDecision(row.segment);
+                          }
+                        : undefined
+                    }
                   >
                     {row.identity.confirmed} (#{row.segment.id})
                   </Tag>
