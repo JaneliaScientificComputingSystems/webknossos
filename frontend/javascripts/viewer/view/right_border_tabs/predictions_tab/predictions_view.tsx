@@ -21,6 +21,7 @@ export default function PredictionsView() {
     setIgnoredNames,
     contactEdges,
     contactFileName,
+    contactUploadedAt,
     setContactProfile,
     clearContactProfile,
     referenceDatasets,
@@ -112,6 +113,8 @@ export default function PredictionsView() {
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
             <Text style={{ flex: 1 }} ellipsis>
               {contactFileName}
+              {contactUploadedAt != null &&
+                ` (uploaded ${new Date(contactUploadedAt).toLocaleDateString()})`}
             </Text>
             <Tooltip title="Clear contact profile">
               <Button size="small" icon={<DeleteOutlined />} onClick={clearContactProfile} />

@@ -13,7 +13,7 @@ import { getMeshFileChunksForSegment } from "admin/api/mesh";
 import { getSegmentCentersOfMass } from "admin/rest_api";
 import { useWkSelector } from "libs/react_hooks";
 import Toast from "libs/toast";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useDispatch } from "react-redux";
 import type { Vector3 } from "viewer/constants";
 import { mayEditAnnotation } from "viewer/model/accessors/annotation_accessor";
@@ -22,7 +22,10 @@ import {
   getCurrentMappingName,
   getVisibleSegments,
 } from "viewer/model/accessors/volumetracing_accessor";
-import { dispatchMaybeFetchMeshFilesAsync } from "viewer/model/actions/annotation_actions";
+import {
+  dispatchMaybeFetchMeshFilesAsync,
+  setAnnotationDescriptionAction,
+} from "viewer/model/actions/annotation_actions";
 import {
   batchUpdateGroupsAndSegmentsAction,
   updateSegmentAction,
@@ -44,6 +47,10 @@ import {
   requestPredictions,
   type SegmentPredictionPayload,
 } from "viewer/view/right_border_tabs/predictions_tab/prediction_client";
+import {
+  encodeConfigIntoDescription,
+  parseConfigFromDescription,
+} from "viewer/view/right_border_tabs/predictions_tab/prediction_config_persistence";
 import {
   getBaseSegmentationName,
   hasSegmentIndex,
@@ -79,7 +86,9 @@ export function usePredictionConfigurationState() {
 
   // Names excluded from the reference contactome used for live Run matching,
   // and from Search by Name's autocomplete suggestions elsewhere in the
-  // neuron-identity panel. Session-local, not persisted.
+  // neuron-identity panel. Persisted into annotation.description (see
+  // prediction_config_persistence.ts) alongside the contact profile below, so
+  // both survive a reload/new session instead of resetting every time.
   const [ignoredNames, setIgnoredNames] = useState<string[]>([]);
 
   const [selectedReferenceDatasets, setSelectedReferenceDatasets] = useState<Set<string>>(
@@ -261,19 +270,75 @@ export function usePredictionConfigurationState() {
   };
 
   // Contact profile: a weighted contact graph between segments, dropped as a
-  // CSV/TSV file. In-memory only (not persisted); a future feature input to the
-  // predictor, not yet consumed by the mock predictor. See plan §9.
+  // CSV/TSV file. Persisted (as parsed edges, not the raw file text) into
+  // annotation.description — see prediction_config_persistence.ts for why
+  // that field and how it coexists with the human-written description.
   const [contactEdges, setContactEdges] = useState<ContactEdge[]>([]);
   const [contactFileName, setContactFileName] = useState<string | null>(null);
+  const [contactUploadedAt, setContactUploadedAt] = useState<number | null>(null);
+
+  // Guards the save effect below from firing on the very first render (before
+  // the one-time load effect has had a chance to populate state from
+  // annotation.description) — without this, mount would immediately "save"
+  // the still-empty initial state right over whatever was persisted.
+  const hasLoadedPersistedConfig = useRef(false);
+  useEffect(() => {
+    const persisted = parseConfigFromDescription(annotation.description);
+    if (persisted != null) {
+      setContactEdges(persisted.contactEdges);
+      setContactFileName(persisted.contactFileName);
+      setContactUploadedAt(persisted.contactUploadedAt);
+      setIgnoredNames(persisted.ignoredNames);
+      setLastRunConfirmedNames(
+        persisted.lastRunConfirmedNames != null ? new Set(persisted.lastRunConfirmedNames) : null,
+      );
+    }
+    hasLoadedPersistedConfig.current = true;
+    // Intentionally run once on mount only (new annotation.description
+    // values written by THIS hook's own save effect below must not re-trigger
+    // a reload, or every save would immediately read itself back).
+    // biome-ignore lint/correctness/useExhaustiveDependencies: see above
+  }, []);
+
+  useEffect(() => {
+    if (!hasLoadedPersistedConfig.current) {
+      return;
+    }
+    const nextDescription = encodeConfigIntoDescription(annotation.description, {
+      contactEdges,
+      contactFileName,
+      contactUploadedAt,
+      ignoredNames,
+      lastRunConfirmedNames:
+        lastRunConfirmedNames != null ? Array.from(lastRunConfirmedNames) : null,
+    });
+    if (nextDescription !== annotation.description) {
+      dispatch(setAnnotationDescriptionAction(nextDescription));
+    }
+    // annotation.description is deliberately excluded from the dependency
+    // list: it's both read and written here, and including it would re-run
+    // this effect (and compare against its own just-written value) on every
+    // description change from ANYWHERE, not just from this hook's own state.
+    // biome-ignore lint/correctness/useExhaustiveDependencies: see above
+  }, [
+    contactEdges,
+    contactFileName,
+    contactUploadedAt,
+    ignoredNames,
+    lastRunConfirmedNames,
+    dispatch,
+  ]);
 
   const setContactProfile = (edges: ContactEdge[], fileName: string) => {
     setContactEdges(edges);
     setContactFileName(fileName);
+    setContactUploadedAt(Date.now());
   };
 
   const clearContactProfile = () => {
     setContactEdges([]);
     setContactFileName(null);
+    setContactUploadedAt(null);
   };
 
   // Shared by Run (live prediction) and offline-predictions upload: both
@@ -473,6 +538,7 @@ export function usePredictionConfigurationState() {
     setIgnoredNames,
     contactEdges,
     contactFileName,
+    contactUploadedAt,
     setContactProfile,
     clearContactProfile,
     referenceDatasets,
