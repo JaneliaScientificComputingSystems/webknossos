@@ -85,6 +85,51 @@ function formatScore(score: number): string {
   return Number.isFinite(score) ? `${Math.round(score * 100)}%` : "–";
 }
 
+/** 32-bit FNV-1a hash of a string. */
+function fnv1aHash(value: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+/**
+ * Finalizer from MurmurHash3 (the "fmix32" step) — FNV-1a alone still leaves
+ * enough structure in short, similarly-charactered inputs (neuron names like
+ * "ADEL"/"ADAR"/"AVAL" sharing a charset and length) that `% 360` on the raw
+ * hash clumped most of them into the same hue band in practice. Re-mixing
+ * with a few xorshift/multiply rounds breaks that up so near-identical inputs
+ * land in uncorrelated parts of the output range.
+ */
+function finalizeHash(hash: number): number {
+  let h = hash;
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x7feb352d);
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x846ca68b);
+  h ^= h >>> 16;
+  return h >>> 0;
+}
+
+/**
+ * Deterministic background/text color for a candidate name — same name
+ * always gets the same color (a pure hash of the string, no lookup table or
+ * state), so a name is visually recognizable across tags/rows without any
+ * hover tracking.
+ */
+function colorForName(name: string): { background: string; color: string } {
+  const hash = finalizeHash(fnv1aHash(name));
+  const hue = hash % 360;
+  const saturation = 55 + ((hash >>> 9) % 45); // 55–99%
+  const lightness = 78 + ((hash >>> 16) % 18); // 78–95%
+  return {
+    background: `hsl(${hue}, ${saturation}%, ${lightness}%)`,
+    color: `hsl(${hue}, ${saturation}%, 20%)`,
+  };
+}
+
 /** All sources with a score for ANY candidate of this segment — the denominator for averageScore. */
 function allSourcesFor(candidates: CandidateScores[]): string[] {
   const sources = new Set<string>();
@@ -194,6 +239,7 @@ function IdentityListItem({
   const renderCandidateTag = (name: string, score: number) => {
     const isConfirmed = identity.confirmed === name;
     const isHighlighted = highlightName != null && name === highlightName;
+    const nameColor = colorForName(name);
     return (
       <Tooltip
         key={name}
@@ -204,13 +250,20 @@ function IdentityListItem({
         }
       >
         <Tag
-          color={isConfirmed ? "green" : undefined}
           icon={isConfirmed ? <CheckOutlined /> : undefined}
           style={{
             cursor: "pointer",
             marginInlineEnd: 0,
             flexShrink: 0,
+            // Deterministic per-name color so the same name is visually
+            // recognizable at a glance across tags/rows — green (below)
+            // overrides this for the confirmed tag instead of stacking.
+            background: nameColor.background,
+            color: nameColor.color,
+            borderColor: nameColor.background,
             ...(isConfirmed && {
+              background: "#389e0d",
+              borderColor: "#389e0d",
               color: "black",
               fontWeight: 600,
               // Simulate a "pressed" button look for the chosen identity.
