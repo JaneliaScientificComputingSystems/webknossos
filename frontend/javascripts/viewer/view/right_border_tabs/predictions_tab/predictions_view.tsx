@@ -473,7 +473,7 @@ export default function PredictionsView() {
       <Text strong style={{ display: "block", marginBottom: 4 }}>
         Contact profile
       </Text>
-      <Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
+      <Text style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
         Upload a CSV/TSV file of segment contacts to use for ID prediction. Must have a header row
         with "neuron1", "neuron2" (segment IDs), and "contact_strength" columns.
       </Text>
@@ -499,7 +499,7 @@ export default function PredictionsView() {
               <Button size="small" icon={<DeleteOutlined />} onClick={handleClearContacts} />
             </Tooltip>
           </div>
-          <Text type="secondary" style={{ display: "block", fontSize: 12 }}>
+          <Text style={{ display: "block", fontSize: 12 }}>
             {contactEdges.length} contact(s) across {countDistinctNeurons(contactEdges)} neuron(s)
           </Text>
         </>
@@ -553,7 +553,7 @@ export default function PredictionsView() {
       <Text strong style={{ display: "block", marginBottom: 4 }}>
         Upload Offline Predictions
       </Text>
-      <Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
+      <Text style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
         Upload a CSV with header
         rows "seg" (segment ID), "neuron" (a neuron name), and
         "score" columns. Filename will be used as prediction name. Ideally scores are in confidence percentage space to they can be averaged with other confidence scores.
