@@ -186,7 +186,10 @@ function IdentityListItem({
   // status tag (e.g. "unlabeled" but a name still showing).
   const displayName = identity.confirmed;
   const sourceGroups = groupCandidatesBySource(identity.candidates);
-  const averageRanking = averageCandidateRanking(identity.candidates);
+  // Averaging across exactly one source just restates that source's own
+  // numbers, so the "average" row only earns its keep with 2+ sources.
+  const averageRanking =
+    sourceGroups.length > 1 ? averageCandidateRanking(identity.candidates) : [];
 
   const renderCandidateTag = (name: string, score: number) => {
     const isConfirmed = identity.confirmed === name;
@@ -411,6 +414,15 @@ function SearchByNameView({
   // here is just clutter. Unchecking is the escape hatch for the rare case
   // of wanting to review/un-ignore one.
   const [includeIgnored, setIncludeIgnored] = useState(false);
+  // Off by default: when on, only segments with a score from EVERY enabled
+  // "Matching scores" source (on at least one candidate) are shown — useful
+  // for comparing sources apples-to-apples instead of segments where most
+  // sources simply never ran.
+  const [requireAllEnabledSources, setRequireAllEnabledSources] = useState(false);
+  const enabledSources = useMemo(
+    () => allSources.filter((source) => !disabledSources.has(source)),
+    [allSources, disabledSources],
+  );
   // Only used when the Name query is empty — ranking by one specific name's
   // score takes priority whenever a name IS typed, since that's a much more
   // targeted order than any of these generic options.
@@ -473,6 +485,17 @@ function SearchByNameView({
     if (!includeIgnored) {
       filtered = filtered.filter((row) => !row.identity.ignored);
     }
+    if (requireAllEnabledSources && enabledSources.length > 0) {
+      filtered = filtered.filter((row) => {
+        const sourcesPresent = new Set<string>();
+        for (const candidate of row.identity.candidates) {
+          for (const source of Object.keys(candidate.scoresBySource)) {
+            sourcesPresent.add(source);
+          }
+        }
+        return enabledSources.every((source) => sourcesPresent.has(source));
+      });
+    }
     return [...filtered].sort((a, b) => {
       if (trimmedQuery.length > 0) {
         return (
@@ -486,7 +509,15 @@ function SearchByNameView({
       // "confidence"
       return topCandidateAverageScore(b.identity) - topCandidateAverageScore(a.identity);
     });
-  }, [allRows, trimmedQuery, includeConfirmedElsewhere, includeIgnored, sortBy]);
+  }, [
+    allRows,
+    trimmedQuery,
+    includeConfirmedElsewhere,
+    includeIgnored,
+    requireAllEnabledSources,
+    enabledSources,
+    sortBy,
+  ]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -565,6 +596,15 @@ function SearchByNameView({
         >
           Exclude ignored segments
         </Checkbox>
+        {enabledSources.length > 1 && (
+          <Checkbox
+            checked={requireAllEnabledSources}
+            onChange={(event) => setRequireAllEnabledSources(event.target.checked)}
+            style={{ marginTop: 4, marginInlineStart: 0, fontSize: 12 }}
+          >
+            Exclude segments missing scores
+          </Checkbox>
+        )}
       </div>
 
       <div style={{ flex: 1, overflowY: "auto" }}>
