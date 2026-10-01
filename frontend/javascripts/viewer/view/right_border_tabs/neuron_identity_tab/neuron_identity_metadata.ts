@@ -7,25 +7,28 @@
  *
  * Storage: each source (e.g. a live prediction run against one reference
  * dataset, or a separately-uploaded offline-prediction CSV) gets its OWN
- * metadata entry — `identity.<source>` — holding just that source's
+ * metadata entry — `identity.source.<source>` — holding just that source's
  * candidates as a JSON array of [name, score] tuples (not {name, score}
  * objects — more compact), sorted by score descending. This is what shows up
  * in WK's native per-segment metadata table (Segments panel), so keeping one
  * entry per source, pre-sorted and tuple-encoded, makes the raw value
  * directly readable there instead of one big merged, unsorted, verbose JSON
- * blob. Kept short (no "candidates" segment in the key) because WK's
- * metadata table visually truncates long key names even when they'd fit. A
+ * blob. The `source.` segment disambiguates a source entry from a static key
+ * like `identity.predictedAt` — without it, a source literally named
+ * "predictedAt" would be indistinguishable from the static key, and any new
+ * static key added later risks colliding with an existing source name. A
  * later run from the same source overwrites only its own entry; other
  * sources' entries are untouched.
  */
 import type { MetadataEntryProto } from "types/api_types";
 import type { Segment } from "viewer/store";
 
-const CANDIDATES_KEY_PREFIX = "identity.";
+const CANDIDATES_KEY_PREFIX = "identity.source.";
 
 export const IdentityMetadataKeys = {
   confirmed: "identity.confirmed", // stringValue: user-chosen name
   predictedAt: "identity.predictedAt", // numberValue: timestamp (ms) of the most recent write
+  ignored: "identity.ignored", // boolValue: true if marked "not a neuron" / excluded from matching
 } as const;
 
 export type CandidateScores = {
@@ -40,6 +43,8 @@ export type SegmentIdentity = {
   candidates: CandidateScores[];
   confirmed: string | null;
   predictedAt: number | null;
+  /** Marked "not a neuron" — excluded from live Run's prediction targets and hidden from Proofread IDs by default. */
+  ignored: boolean;
 };
 
 function findEntry(metadata: MetadataEntryProto[], key: string): MetadataEntryProto | undefined {
@@ -102,6 +107,7 @@ export function getSegmentIdentity(segment: Segment): SegmentIdentity {
     candidates: Array.from(byName.values()),
     confirmed: findEntry(metadata, IdentityMetadataKeys.confirmed)?.stringValue ?? null,
     predictedAt: findEntry(metadata, IdentityMetadataKeys.predictedAt)?.numberValue ?? null,
+    ignored: findEntry(metadata, IdentityMetadataKeys.ignored)?.boolValue ?? false,
   };
 }
 
@@ -143,6 +149,16 @@ export function withConfirmedIdentity(
 /** Clear the confirmed decision (keeps candidates as-is). */
 export function withUnconfirmedIdentity(metadata: MetadataEntryProto[]): MetadataEntryProto[] {
   return metadata.filter((entry) => entry.key !== IdentityMetadataKeys.confirmed);
+}
+
+/** Mark a segment "not a neuron" / ignored — excluded from live Run's targets and hidden by default. */
+export function withIgnored(metadata: MetadataEntryProto[]): MetadataEntryProto[] {
+  return upsertEntry(metadata, { key: IdentityMetadataKeys.ignored, boolValue: true });
+}
+
+/** Clear the ignored flag. */
+export function withUnignored(metadata: MetadataEntryProto[]): MetadataEntryProto[] {
+  return metadata.filter((entry) => entry.key !== IdentityMetadataKeys.ignored);
 }
 
 /**
