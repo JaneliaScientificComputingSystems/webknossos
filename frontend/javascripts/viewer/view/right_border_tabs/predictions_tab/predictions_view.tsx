@@ -1,7 +1,7 @@
 import { DeleteOutlined, ThunderboltOutlined, UploadOutlined } from "@ant-design/icons";
 import { getMeshFileChunksForSegment } from "admin/api/mesh";
 import { getSegmentCentersOfMass } from "admin/rest_api";
-import { Button, Divider, Empty, Select, Tooltip, Typography, Upload } from "antd";
+import { Button, Divider, Empty, Input, Select, Tag, Tooltip, Typography, Upload } from "antd";
 import type { UploadChangeParam, UploadFile } from "antd/lib/upload";
 import { useWkSelector } from "libs/react_hooks";
 import { readFileAsText } from "libs/read_file";
@@ -79,7 +79,14 @@ function ParamRow({
   );
 }
 
-export default function PredictionsView() {
+export default function PredictionsView({
+  ignoredNames,
+  onIgnoredNamesChange,
+}: {
+  /** Names excluded from the reference contactome for live Run matching, and from autocomplete elsewhere. */
+  ignoredNames: string[];
+  onIgnoredNamesChange: (ignoredNames: string[]) => void;
+}) {
   const dispatch = useDispatch();
   const dataset = useWkSelector((state) => state.dataset);
   const annotation = useWkSelector((state) => state.annotation);
@@ -101,6 +108,7 @@ export default function PredictionsView() {
   >("loading");
   const [referenceDatasets, setReferenceDatasets] = useState<string[]>([]);
   const [isRunning, setIsRunning] = useState(false);
+  const [newIgnoredName, setNewIgnoredName] = useState("");
 
   // Populate the reference-dataset dropdown from the service itself, rather
   // than hardcoding the list here — it's the service (not the frontend) that
@@ -376,7 +384,15 @@ export default function PredictionsView() {
       // falling back to a minimal placeholder otherwise. Read fresh at click
       // time so segments added after the file was loaded (e.g. via
       // proofreading in between Run clicks) are picked up too.
-      const targetIds = getDistinctNeuronIds(contactEdges);
+      // Segments marked "ignore (not a neuron)" are dropped entirely —
+      // from both the targets AND any contact edge that references them —
+      // so they're never sent to the matcher at all.
+      const ignoredIds = new Set(
+        Array.from(segments.values())
+          .filter((segment) => getSegmentIdentity(segment).ignored)
+          .map((segment) => Number(segment.id)),
+      );
+      const targetIds = getDistinctNeuronIds(contactEdges).filter((id) => !ignoredIds.has(id));
       const requestSegments: PredictionServiceInputSegment[] = targetIds.map((neuronId) => {
         const segment = segments.getNullable(BigInt(neuronId));
         if (segment == null) {
@@ -391,12 +407,15 @@ export default function PredictionsView() {
 
       const payload: PredictRequestPayload = {
         segments: requestSegments,
-        contact_edges: contactEdges.map((edge) => ({
-          neuron_a: edge.neuronA,
-          neuron_b: edge.neuronB,
-          weight: edge.weight,
-        })),
+        contact_edges: contactEdges
+          .filter((edge) => !ignoredIds.has(edge.neuronA) && !ignoredIds.has(edge.neuronB))
+          .map((edge) => ({
+            neuron_a: edge.neuronA,
+            neuron_b: edge.neuronB,
+            weight: edge.weight,
+          })),
         reference_dataset: referenceDataset,
+        ignored_names: ignoredNames,
       };
 
       let response: PredictResponsePayload;
@@ -524,6 +543,57 @@ export default function PredictionsView() {
           options={referenceDatasets.map((dataset) => ({ value: dataset, label: dataset }))}
         />
       </ParamRow>
+
+      <Text strong style={{ display: "block", marginBottom: 4 }}>
+        Ignored names
+      </Text>
+      <Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
+        Excluded from the reference dataset for live Run matching, and from autocomplete
+        suggestions elsewhere.
+      </Text>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <Input
+          size="small"
+          value={newIgnoredName}
+          onChange={(event) => setNewIgnoredName(event.currentTarget.value)}
+          onPressEnter={() => {
+            const trimmed = newIgnoredName.trim();
+            if (trimmed.length > 0 && !ignoredNames.includes(trimmed)) {
+              onIgnoredNamesChange([...ignoredNames, trimmed]);
+            }
+            setNewIgnoredName("");
+          }}
+          placeholder="Neuron name…"
+          style={{ flex: 1 }}
+        />
+        <Button
+          size="small"
+          onClick={() => {
+            const trimmed = newIgnoredName.trim();
+            if (trimmed.length > 0 && !ignoredNames.includes(trimmed)) {
+              onIgnoredNamesChange([...ignoredNames, trimmed]);
+            }
+            setNewIgnoredName("");
+          }}
+        >
+          Add
+        </Button>
+      </div>
+      {ignoredNames.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+          {ignoredNames.map((name) => (
+            <Tag
+              key={name}
+              closable
+              onClose={() => onIgnoredNamesChange(ignoredNames.filter((n) => n !== name))}
+            >
+              {name}
+            </Tag>
+          ))}
+        </div>
+      )}
+
+      <Divider style={{ margin: "12px 0" }} />
 
       <Tooltip
         title={

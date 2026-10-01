@@ -26,6 +26,8 @@ export type PredictRequestPayload = {
   contact_edges: PredictionServiceContactEdge[];
   exclude_assigned_names?: boolean;
   reference_dataset: string;
+  /** Neuron names to exclude from the reference contactome before matching. */
+  ignored_names?: string[];
 };
 
 export type ServiceCandidate = {

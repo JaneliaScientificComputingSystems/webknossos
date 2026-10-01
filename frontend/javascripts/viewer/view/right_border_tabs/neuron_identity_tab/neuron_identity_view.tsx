@@ -3,6 +3,7 @@ import {
   CaretDownOutlined,
   CaretUpOutlined,
   CheckOutlined,
+  CloseOutlined,
 } from "@ant-design/icons";
 import {
   AutoComplete,
@@ -10,7 +11,6 @@ import {
   Checkbox,
   Empty,
   type MenuProps,
-  Segmented,
   Select,
   Tabs,
   Tag,
@@ -55,15 +55,16 @@ import {
   type IdentityStatus,
   type SegmentIdentity,
   withConfirmedIdentity,
+  withIgnored,
   withUnconfirmedIdentity,
+  withUnignored,
 } from "./neuron_identity_metadata";
 
 const CONTEXT_MENU_OVERLAY_CLASS = "neuron-identity-context-menu-overlay";
 
 const { Text } = Typography;
 
-type FilterKey = "all" | "review" | "confirmed";
-type SortKey = "confidence" | "id" | "name";
+type SortKey = "confidence" | "id";
 
 type IdentityRow = {
   segment: Segment;
@@ -137,18 +138,7 @@ function averageCandidateRanking(
     .sort((a, b) => b.score - a.score);
 }
 
-function matchesFilter(status: IdentityStatus, filter: FilterKey): boolean {
-  switch (filter) {
-    case "all":
-      return true;
-    case "review":
-      return status === "predicted";
-    case "confirmed":
-      return status === "confirmed";
-  }
-}
-
-/** This segment's best candidate's cross-source average score (missing source = 0), for sorting. */
+/** This segment's best candidate's cross-source average score (missing source = 0), for sorting with no name query. */
 function topCandidateAverageScore(identity: SegmentIdentity): number {
   const top = averageCandidateRanking(identity.candidates)[0];
   return top != null ? top.score : Number.NEGATIVE_INFINITY;
@@ -263,6 +253,7 @@ function IdentityListItem({
         borderBottom: "1px solid var(--color-wk-border, rgba(128,128,128,0.2))",
         padding: "6px 8px",
         background: isActive ? "rgba(24,144,255,0.08)" : undefined,
+        opacity: identity.ignored ? 0.5 : 1,
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -296,6 +287,11 @@ function IdentityListItem({
         <Text strong ellipsis style={{ flex: 1 }}>
           {displayName ?? <Text>unnamed</Text>}
         </Text>
+        {identity.ignored && (
+          <Tag color="default" style={{ marginInlineEnd: 0 }}>
+            ignored
+          </Tag>
+        )}
         <Tag
           color={STATUS_TAG_COLOR[status]}
           style={{ marginInlineEnd: 0, ...(status === "confirmed" && { color: "black" }) }}
@@ -358,6 +354,10 @@ function SearchByNameView({
   activeCellId,
   query,
   onQueryChange,
+  ignoredNames,
+  allSources,
+  disabledSources,
+  onToggleSource,
   onGoTo,
   onConfirm,
   onUnconfirm,
@@ -368,6 +368,13 @@ function SearchByNameView({
   activeCellId: bigint | undefined;
   query: string;
   onQueryChange: (query: string) => void;
+  /** Names excluded from autocomplete suggestions (see ID Prediction's ignored-names list). */
+  ignoredNames: string[];
+  /** Every source seen across all segments' candidates — the "Matching scores" checkbox list's population. */
+  allSources: string[];
+  /** Sources unchecked in "Matching scores" — excluded from display and the cross-source average panel-wide. */
+  disabledSources: Set<string>;
+  onToggleSource: (source: string, enabled: boolean) => void;
   onGoTo: (segment: Segment) => void;
   onConfirm: (segment: Segment, name: string) => void;
   onUnconfirm: (segment: Segment) => void;
@@ -381,6 +388,15 @@ function SearchByNameView({
   // Unchecking is the escape hatch for the rare case of wanting to
   // reconsider/reassign an already-confirmed segment.
   const [includeConfirmedElsewhere, setIncludeConfirmedElsewhere] = useState(false);
+  // Segments marked "ignore (not a neuron)" are hidden from results by
+  // default — they're excluded from matching entirely, so surfacing them
+  // here is just clutter. Unchecking is the escape hatch for the rare case
+  // of wanting to review/un-ignore one.
+  const [includeIgnored, setIncludeIgnored] = useState(false);
+  // Only used when the Name query is empty — ranking by one specific name's
+  // score takes priority whenever a name IS typed, since that's a much more
+  // targeted order than any of these generic options.
+  const [sortBy, setSortBy] = useState<SortKey>("confidence");
   const trimmedQuery = query.trim();
 
   // Every candidate name seen across all segments' predictions/offline-CSV
@@ -398,17 +414,22 @@ function SearchByNameView({
     return names;
   }, [allRows]);
 
+  const ignoredNameSet = useMemo(() => new Set(ignoredNames), [ignoredNames]);
+
   const knownNames = useMemo(() => {
     const names = new Set<string>();
     for (const row of allRows) {
       for (const candidate of row.identity.candidates) {
+        if (ignoredNameSet.has(candidate.name)) {
+          continue;
+        }
         if (includeConfirmedElsewhere || !confirmedNames.has(candidate.name)) {
           names.add(candidate.name);
         }
       }
     }
     return Array.from(names).sort((a, b) => a.localeCompare(b));
-  }, [allRows, confirmedNames, includeConfirmedElsewhere]);
+  }, [allRows, confirmedNames, includeConfirmedElsewhere, ignoredNameSet]);
 
   const nameOptions = useMemo(() => {
     const lowerQuery = query.trim().toLowerCase();
@@ -420,23 +441,34 @@ function SearchByNameView({
   }, [knownNames, query]);
 
   const matches = useMemo(() => {
-    if (trimmedQuery.length === 0) {
-      return [];
+    let filtered = allRows;
+    if (trimmedQuery.length > 0) {
+      filtered = filtered.filter((row) =>
+        Number.isFinite(averageScoreForName(row.identity, trimmedQuery)),
+      );
     }
-    let filtered = allRows.filter((row) =>
-      Number.isFinite(averageScoreForName(row.identity, trimmedQuery)),
-    );
     if (!includeConfirmedElsewhere) {
       filtered = filtered.filter(
         (row) => row.identity.confirmed == null || row.identity.confirmed === trimmedQuery,
       );
     }
-    return [...filtered].sort(
-      (a, b) =>
-        averageScoreForName(b.identity, trimmedQuery) -
-        averageScoreForName(a.identity, trimmedQuery),
-    );
-  }, [allRows, trimmedQuery, includeConfirmedElsewhere]);
+    if (!includeIgnored) {
+      filtered = filtered.filter((row) => !row.identity.ignored);
+    }
+    return [...filtered].sort((a, b) => {
+      if (trimmedQuery.length > 0) {
+        return (
+          averageScoreForName(b.identity, trimmedQuery) -
+          averageScoreForName(a.identity, trimmedQuery)
+        );
+      }
+      if (sortBy === "id") {
+        return a.segment.id < b.segment.id ? -1 : a.segment.id > b.segment.id ? 1 : 0;
+      }
+      // "confidence"
+      return topCandidateAverageScore(b.identity) - topCandidateAverageScore(a.identity);
+    });
+  }, [allRows, trimmedQuery, includeConfirmedElsewhere, includeIgnored, sortBy]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -446,15 +478,61 @@ function SearchByNameView({
           borderBottom: "1px solid var(--color-wk-border, rgba(128,128,128,0.2))",
         }}
       >
-        <AutoComplete
-          value={query}
-          onChange={onQueryChange}
-          options={nameOptions}
-          filterOption={false}
-          size="small"
-          placeholder="Name…"
-          style={{ width: "100%" }}
-        />
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Text style={{ fontSize: 12 }}>Sort by:</Text>
+          <Select<SortKey>
+            size="small"
+            value={sortBy}
+            onChange={setSortBy}
+            disabled={trimmedQuery.length > 0}
+            style={{ width: 140 }}
+            options={[
+              { label: "Confidence", value: "confidence" },
+              { label: "Segment ID", value: "id" },
+            ]}
+          />
+          <Text style={{ fontSize: 12, flex: "0 0 auto" }}>Search by name:</Text>
+          <AutoComplete
+            value={query}
+            onChange={onQueryChange}
+            options={nameOptions}
+            filterOption={false}
+            size="small"
+            placeholder="Name…"
+            style={{ flex: 1 }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && query.length > 0) {
+                event.stopPropagation();
+                onQueryChange("");
+              }
+            }}
+          />
+          {query.length > 0 && (
+            <Tooltip title="Clear search">
+              <Button
+                size="small"
+                type="text"
+                icon={<CloseOutlined />}
+                onClick={() => onQueryChange("")}
+              />
+            </Tooltip>
+          )}
+        </div>
+        {allSources.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+            <Text style={{ fontSize: 12, flex: "0 0 auto" }}>Matching scores:</Text>
+            {allSources.map((source) => (
+              <Checkbox
+                key={source}
+                checked={!disabledSources.has(source)}
+                onChange={(event) => onToggleSource(source, event.target.checked)}
+                style={{ fontSize: 12, marginInlineStart: 0 }}
+              >
+                {source}
+              </Checkbox>
+            ))}
+          </div>
+        )}
         <Checkbox
           checked={!includeConfirmedElsewhere}
           onChange={(event) => setIncludeConfirmedElsewhere(!event.target.checked)}
@@ -462,19 +540,24 @@ function SearchByNameView({
         >
           Exclude confirmed neurons
         </Checkbox>
+        <Checkbox
+          checked={!includeIgnored}
+          onChange={(event) => setIncludeIgnored(!event.target.checked)}
+          style={{ marginTop: 4, marginInlineStart: 0, fontSize: 12 }}
+        >
+          Exclude ignored segments
+        </Checkbox>
       </div>
 
       <div style={{ flex: 1, overflowY: "auto" }}>
-        {trimmedQuery.length === 0 ? (
+        {matches.length === 0 ? (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description="Type a neuron name to see which segments might match."
-            style={{ marginTop: 40 }}
-          />
-        ) : matches.length === 0 ? (
-          <Empty
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={`No segment has "${trimmedQuery}" as a candidate.`}
+            description={
+              trimmedQuery.length > 0
+                ? `No segment has "${trimmedQuery}" as a candidate.`
+                : "No segments match these filters."
+            }
             style={{ marginTop: 40 }}
           />
         ) : (
@@ -600,11 +683,9 @@ function CurrentSegmentView({
 
 export default function NeuronIdentityView() {
   const dispatch = useDispatch();
-  const [filter, setFilter] = useState<FilterKey>("all");
-  const [sortBy, setSortBy] = useState<SortKey>("confidence");
   const [contextMenuPosition, setContextMenuPosition] = useState<[number, number] | null>(null);
   const [contextMenu, setContextMenu] = useState<MenuProps | null>(null);
-  const [subTab, setSubTab] = useState<"proofread" | "predictions" | "searchByName">("proofread");
+  const [subTab, setSubTab] = useState<"predictions" | "searchByName">("predictions");
   // Search by Name's query, lifted here so clicking a candidate tag anywhere
   // (including the main Proofreading list) can populate it and jump to that
   // tab, not just from within Search by Name's own result rows.
@@ -613,6 +694,17 @@ export default function NeuronIdentityView() {
     setSearchByNameQuery(name);
     setSubTab("searchByName");
   };
+  // Names excluded from the reference contactome used for live Run matching
+  // (ID Prediction tab) and from Search by Name's autocomplete suggestions —
+  // lifted here so both tabs see the same list. Not persisted.
+  const [ignoredNames, setIgnoredNames] = useState<string[]>([]);
+  // Sources (e.g. "prediction:adult", "morphology_scores") excluded from
+  // display and from the cross-source average everywhere in this panel —
+  // session-local like ignoredNames, not persisted. null means "not
+  // explicitly touched yet": every source is treated as enabled until the
+  // user unchecks one, so newly-seen sources start enabled rather than
+  // silently excluded.
+  const [disabledSources, setDisabledSources] = useState<Set<string>>(new Set());
   const [isCurrentSegmentExpanded, setIsCurrentSegmentExpanded] = useState(true);
   const [isConfirmedIdsExpanded, setIsConfirmedIdsExpanded] = useState(true);
 
@@ -639,7 +731,7 @@ export default function NeuronIdentityView() {
   // its first entry.
   const selectedSegmentId = useWkSelector((state) => getSelectedIds(state).segments[0]);
 
-  const allRows = useMemo<IdentityRow[]>(() => {
+  const unfilteredRows = useMemo<IdentityRow[]>(() => {
     if (segments == null) {
       return [];
     }
@@ -649,28 +741,100 @@ export default function NeuronIdentityView() {
     });
   }, [segments]);
 
-  const visibleRows = useMemo<IdentityRow[]>(() => {
-    const filtered = allRows.filter((row) => matchesFilter(row.status, filter));
-    const sorted = [...filtered];
-    sorted.sort((a, b) => {
-      if (sortBy === "id") {
-        return a.segment.id < b.segment.id ? -1 : a.segment.id > b.segment.id ? 1 : 0;
+  // Every source seen across all segments' candidates — the "Matching
+  // scores" checkbox list's population. Derived from the unfiltered rows so
+  // a source doesn't disappear from the list just because the user disabled
+  // it (which would make it impossible to re-enable).
+  const allSources = useMemo(() => {
+    const sources = new Set<string>();
+    for (const row of unfilteredRows) {
+      for (const candidate of row.identity.candidates) {
+        for (const source of Object.keys(candidate.scoresBySource)) {
+          sources.add(source);
+        }
       }
-      if (sortBy === "name") {
-        const nameA = a.identity.confirmed ?? "";
-        const nameB = b.identity.confirmed ?? "";
-        return nameA.localeCompare(nameB);
+    }
+    return Array.from(sources).sort((a, b) => a.localeCompare(b));
+  }, [unfilteredRows]);
+
+  const handleToggleSource = (source: string, enabled: boolean) => {
+    setDisabledSources((current) => {
+      const next = new Set(current);
+      if (enabled) {
+        next.delete(source);
+      } else {
+        next.add(source);
       }
-      // "confidence"
-      return topCandidateAverageScore(b.identity) - topCandidateAverageScore(a.identity);
+      return next;
     });
-    return sorted;
-  }, [allRows, filter, sortBy]);
+  };
+
+  // Disabled sources are stripped out of each candidate's scoresBySource
+  // (and a candidate left with no remaining source is dropped entirely) here
+  // — once, at the top of the panel — so every consumer downstream (Current
+  // Segment, Search by Name, Confirmed IDs, the context menu) automatically
+  // sees only enabled sources without re-deriving this filter itself.
+  const allRows = useMemo<IdentityRow[]>(() => {
+    if (disabledSources.size === 0) {
+      return unfilteredRows;
+    }
+    return unfilteredRows.map((row) => {
+      const candidates = row.identity.candidates
+        .map((candidate) => {
+          const scoresBySource = Object.fromEntries(
+            Object.entries(candidate.scoresBySource).filter(
+              ([source]) => !disabledSources.has(source),
+            ),
+          );
+          return { ...candidate, scoresBySource };
+        })
+        .filter((candidate) => Object.keys(candidate.scoresBySource).length > 0);
+      const identity = { ...row.identity, candidates };
+      return { ...row, identity, status: getIdentityStatus(identity) };
+    });
+  }, [unfilteredRows, disabledSources]);
 
   const confirmedCount = useMemo(
     () => allRows.filter((row) => row.status === "confirmed").length,
     [allRows],
   );
+  const ignoredCount = useMemo(
+    () => allRows.filter((row) => row.identity.ignored).length,
+    [allRows],
+  );
+  // Non-ignored segments still without a confirmed name — the gap between
+  // confirmedCount and the (ignored-excluded) denominator shown in the title.
+  const unnamedSegmentCount = useMemo(
+    () => allRows.filter((row) => !row.identity.ignored && row.identity.confirmed == null).length,
+    [allRows],
+  );
+  // Candidate names surfaced by predictions/offline-CSVs for at least one
+  // non-ignored segment, but not yet confirmed on ANY segment — distinct from
+  // unnamedSegmentCount, which counts segments, not names.
+  const unassignedNameCount = useMemo(() => {
+    const confirmedNames = new Set<string>();
+    const candidateNames = new Set<string>();
+    for (const row of allRows) {
+      if (row.identity.confirmed != null) {
+        confirmedNames.add(row.identity.confirmed);
+      }
+      if (row.identity.ignored) {
+        continue;
+      }
+      for (const candidate of row.identity.candidates) {
+        if (!ignoredNames.includes(candidate.name)) {
+          candidateNames.add(candidate.name);
+        }
+      }
+    }
+    let count = 0;
+    for (const name of candidateNames) {
+      if (!confirmedNames.has(name)) {
+        count += 1;
+      }
+    }
+    return count;
+  }, [allRows, ignoredNames]);
 
   const handleConfirm = (segment: Segment, name: string) => {
     if (visibleSegmentationLayer == null) {
@@ -731,6 +895,23 @@ export default function NeuronIdentityView() {
       updateSegmentAction(
         segment.id,
         { metadata: withUnconfirmedIdentity(segment.metadata ?? []) },
+        visibleSegmentationLayer.name,
+        undefined,
+        true,
+      ),
+    );
+  };
+
+  const handleToggleIgnored = (segment: Segment, ignored: boolean) => {
+    if (visibleSegmentationLayer == null) {
+      return;
+    }
+    dispatch(
+      updateSegmentAction(
+        segment.id,
+        {
+          metadata: (ignored ? withIgnored : withUnignored)(segment.metadata ?? []),
+        },
         visibleSegmentationLayer.name,
         undefined,
         true,
@@ -819,6 +1000,11 @@ export default function NeuronIdentityView() {
           onClick: withHide(() => handleResetDecision(segment)),
         });
       }
+      items.push({
+        key: "toggleIgnored",
+        label: identity.ignored ? "Un-ignore segment" : "Ignore segment (not a neuron)",
+        onClick: withHide(() => handleToggleIgnored(segment, !identity.ignored)),
+      });
       items.push({ type: "divider" });
       items.push({
         key: "color",
@@ -904,13 +1090,12 @@ export default function NeuronIdentityView() {
 
       <Tabs
         activeKey={subTab}
-        onChange={(key) => setSubTab(key as "proofread" | "predictions" | "searchByName")}
+        onChange={(key) => setSubTab(key as "predictions" | "searchByName")}
         size="small"
         tabBarStyle={{ paddingInline: 8, marginBottom: 0 }}
         items={[
-          { key: "proofread", label: "Proofreading" },
-          { key: "predictions", label: "ID Prediction" },
-          { key: "searchByName", label: "Search by Name" },
+          { key: "predictions", label: "Predict IDs" },
+          { key: "searchByName", label: "Proofread IDs" },
         ]}
       />
 
@@ -923,7 +1108,7 @@ export default function NeuronIdentityView() {
       <div
         style={{ flex: 1, minHeight: 0, display: subTab === "predictions" ? undefined : "none" }}
       >
-        <PredictionsView />
+        <PredictionsView ignoredNames={ignoredNames} onIgnoredNamesChange={setIgnoredNames} />
       </div>
       <div
         style={{ flex: 1, minHeight: 0, display: subTab === "searchByName" ? undefined : "none" }}
@@ -934,79 +1119,15 @@ export default function NeuronIdentityView() {
           activeCellId={activeCellId}
           query={searchByNameQuery}
           onQueryChange={setSearchByNameQuery}
+          ignoredNames={ignoredNames}
+          allSources={allSources}
+          disabledSources={disabledSources}
+          onToggleSource={handleToggleSource}
           onGoTo={handleGoTo}
           onConfirm={handleConfirm}
           onUnconfirm={handleResetDecision}
           onContextMenu={onRowContextMenu}
         />
-      </div>
-      <div
-        style={{
-          flex: 1,
-          minHeight: 0,
-          display: subTab === "proofread" ? "flex" : "none",
-          flexDirection: "column",
-        }}
-      >
-        <div
-          style={{
-            padding: 8,
-            borderBottom: "1px solid var(--color-wk-border, rgba(128,128,128,0.2))",
-          }}
-        >
-          <Text style={{ display: "block" }}>
-            {confirmedCount} / {allRows.length} confirmed
-          </Text>
-          <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-            <Segmented<FilterKey>
-              size="small"
-              value={filter}
-              onChange={(value) => setFilter(value)}
-              options={[
-                { label: "All", value: "all" },
-                { label: "Review", value: "review" },
-                { label: "Confirmed", value: "confirmed" },
-              ]}
-            />
-            <Select<SortKey>
-              size="small"
-              value={sortBy}
-              onChange={setSortBy}
-              style={{ width: 130 }}
-              options={[
-                { label: "Sort: confidence", value: "confidence" },
-                { label: "Sort: segment id", value: "id" },
-                { label: "Sort: name", value: "name" },
-              ]}
-            />
-          </div>
-        </div>
-
-        <div style={{ flex: 1, overflowY: "auto" }}>
-          {visibleRows.length === 0 ? (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={
-                allRows.length === 0 ? "No segments yet." : "No segments match this filter."
-              }
-              style={{ marginTop: 40 }}
-            />
-          ) : (
-            visibleRows.map((row) => (
-              <IdentityListItem
-                key={row.segment.id}
-                row={row}
-                allowUpdate={allowUpdate}
-                isActive={activeCellId === row.segment.id}
-                onGoTo={handleGoTo}
-                onConfirm={handleConfirm}
-                onUnconfirm={handleResetDecision}
-                onSearchName={handleSearchName}
-                onContextMenu={onRowContextMenu}
-              />
-            ))
-          )}
-        </div>
       </div>
 
       <div
@@ -1024,7 +1145,7 @@ export default function NeuronIdentityView() {
           iconPosition="end"
           onClick={() => setIsConfirmedIdsExpanded((expanded) => !expanded)}
         >
-          Confirmed IDs ({confirmedCount}/{allRows.length})
+          Confirmed IDs ({confirmedCount})
         </Button>
         {isConfirmedIdsExpanded && confirmedCount === 0 && (
           <Text style={{ display: "block", fontSize: 12, marginTop: 4 }}>
@@ -1063,6 +1184,94 @@ export default function NeuronIdentityView() {
                   </Tag>
                 </Tooltip>
               ))}
+          </div>
+        )}
+        {isConfirmedIdsExpanded && (
+          <Text style={{ display: "block", fontSize: 12, marginTop: 4 }}>
+            {unnamedSegmentCount} segment{unnamedSegmentCount === 1 ? "" : "s"} unnamed,{" "}
+            {unassignedNameCount} name{unassignedNameCount === 1 ? "" : "s"} unassigned
+          </Text>
+        )}
+        {isConfirmedIdsExpanded && (
+          <div style={{ display: "flex", gap: 16, marginTop: 8 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ display: "block", fontSize: 12, fontWeight: "bold" }}>
+                Excluded Segments ({ignoredCount})
+              </Text>
+              {ignoredCount === 0 ? (
+                <Text style={{ display: "block", fontSize: 12, marginTop: 4 }}>None.</Text>
+              ) : (
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 4,
+                    maxHeight: 80,
+                    overflowY: "auto",
+                    marginTop: 4,
+                  }}
+                >
+                  {allRows
+                    .filter((row) => row.identity.ignored)
+                    .sort((a, b) => (a.segment.id < b.segment.id ? -1 : 1))
+                    .map((row) => (
+                      <Tooltip
+                        key={row.segment.id}
+                        title={
+                          allowUpdate
+                            ? "Click to select — right-click to un-ignore"
+                            : "Click to select"
+                        }
+                      >
+                        <Tag
+                          color="default"
+                          style={{ cursor: "pointer" }}
+                          onClick={() => handleGoTo(row.segment)}
+                          onContextMenu={
+                            allowUpdate
+                              ? (event) => {
+                                  event.preventDefault();
+                                  handleToggleIgnored(row.segment, false);
+                                }
+                              : undefined
+                          }
+                        >
+                          #{row.segment.id}
+                        </Tag>
+                      </Tooltip>
+                    ))}
+                </div>
+              )}
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ display: "block", fontSize: 12, fontWeight: "bold" }}>
+                Ignored Names ({ignoredNames.length})
+              </Text>
+              {ignoredNames.length === 0 ? (
+                <Text style={{ display: "block", fontSize: 12, marginTop: 4 }}>None.</Text>
+              ) : (
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 4,
+                    maxHeight: 80,
+                    overflowY: "auto",
+                    marginTop: 4,
+                  }}
+                >
+                  {ignoredNames.map((name) => (
+                    <Tag
+                      key={name}
+                      closable
+                      onClose={() => setIgnoredNames(ignoredNames.filter((n) => n !== name))}
+                    >
+                      {name}
+                    </Tag>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
