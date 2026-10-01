@@ -17,13 +17,12 @@ import {
   Tooltip,
   Typography,
 } from "antd";
-import { ChangeColorMenuItemContent } from "components/color_picker";
 import { V4 } from "libs/mjs";
 import { useWkSelector } from "libs/react_hooks";
 import Toast from "libs/toast";
 import { type MouseEvent, useMemo, useState } from "react";
 import { useDispatch } from "react-redux";
-import type { Vector3, Vector4 } from "viewer/constants";
+import type { Vector4 } from "viewer/constants";
 import { mayEditAnnotation } from "viewer/model/accessors/annotation_accessor";
 import { getVisibleSegmentationLayer } from "viewer/model/accessors/dataset_accessor";
 import { layerToGlobalTransformedPosition } from "viewer/model/accessors/dataset_layer_transformation_accessor";
@@ -37,8 +36,6 @@ import {
   setPositionAction,
 } from "viewer/model/actions/flycam_actions";
 import {
-  removeSegmentAction,
-  setActiveCellAction,
   setSelectedSegmentsOrGroupAction,
   updateSegmentAction,
 } from "viewer/model/actions/volumetracing_actions";
@@ -161,8 +158,8 @@ function IdentityListItem({
   onGoTo,
   onConfirm,
   onUnconfirm,
-  onSearchName,
-  onContextMenu,
+  onTagContextMenu,
+  onRowContextMenu,
 }: {
   row: IdentityRow;
   allowUpdate: boolean;
@@ -171,11 +168,11 @@ function IdentityListItem({
   highlightName?: string;
   onGoTo: (segment: Segment) => void;
   onConfirm: (segment: Segment, name: string) => void;
-  /** Double-click on the ALREADY-confirmed tag: clear the confirmation instead of re-confirming it. */
   onUnconfirm: (segment: Segment) => void;
-  /** Single-click on a candidate tag: search for that name instead of confirming. */
-  onSearchName: (name: string) => void;
-  onContextMenu: (event: MouseEvent<HTMLDivElement>, row: IdentityRow) => void;
+  /** Right-click on a candidate tag: "Search by name" / "Exclude name" menu. */
+  onTagContextMenu: (event: MouseEvent<HTMLElement>, row: IdentityRow, name: string) => void;
+  /** Right-click on the row outside a tag: "Ignore segment" menu. */
+  onRowContextMenu: (event: MouseEvent<HTMLDivElement>, row: IdentityRow) => void;
 }) {
   const { segment, identity, status } = row;
   const segmentColorRGBA = useWkSelector(
@@ -199,8 +196,8 @@ function IdentityListItem({
         key={name}
         title={
           allowUpdate
-            ? `Click to search — right-click to ${isConfirmed ? "unconfirm" : "confirm"}`
-            : "Click to search"
+            ? `Click to ${isConfirmed ? "unconfirm" : "confirm"} — right-click for more options`
+            : "Right-click for more options"
         }
       >
         <Tag
@@ -222,15 +219,9 @@ function IdentityListItem({
                 outlineOffset: -1,
               }),
           }}
-          onClick={() => onSearchName(name)}
-          onContextMenu={
+          onClick={
             allowUpdate
-              ? (event) => {
-                  // Confirm/unconfirm instead of opening the row's own
-                  // context menu (bound on the row div this tag sits
-                  // inside) — stop it from bubbling up.
-                  event.preventDefault();
-                  event.stopPropagation();
+              ? () => {
                   if (isConfirmed) {
                     onUnconfirm(segment);
                   } else {
@@ -239,6 +230,13 @@ function IdentityListItem({
                 }
               : undefined
           }
+          onContextMenu={(event) => {
+            // Open the tag's own menu instead of the row's — stop it from
+            // bubbling up to the row div this tag sits inside.
+            event.preventDefault();
+            event.stopPropagation();
+            onTagContextMenu(event, row, name);
+          }}
         >
           {name} {formatScore(score)}
         </Tag>
@@ -248,12 +246,14 @@ function IdentityListItem({
 
   return (
     <div
-      onContextMenu={(event) => onContextMenu(event, row)}
+      onClick={() => onGoTo(segment)}
+      onContextMenu={(event) => onRowContextMenu(event, row)}
       style={{
         borderBottom: "1px solid var(--color-wk-border, rgba(128,128,128,0.2))",
         padding: "6px 8px",
         background: isActive ? "rgba(24,144,255,0.08)" : undefined,
         opacity: identity.ignored ? 0.5 : 1,
+        cursor: "pointer",
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -273,13 +273,7 @@ function IdentityListItem({
               : "Position unknown — cannot go to this segment yet"
           }
         >
-          <Button
-            size="small"
-            type="text"
-            icon={<AimOutlined />}
-            disabled={segment.anchorPosition == null}
-            onClick={() => onGoTo(segment)}
-          />
+          <AimOutlined style={{ opacity: segment.anchorPosition == null ? 0.3 : 1 }} />
         </Tooltip>
         <Text style={{ fontVariantNumeric: "tabular-nums" }}>
           #{segment.id}
@@ -312,7 +306,20 @@ function IdentityListItem({
               >
                 average
               </Text>
-              <div style={{ display: "flex", flexWrap: "nowrap", gap: 4, overflowX: "auto" }}>
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "nowrap",
+                  gap: 4,
+                  overflowX: "auto",
+                  // Reserve space below the tags for the scrollbar track so it
+                  // doesn't render on top of the last row of tags — without
+                  // this, a right-click meant for a tag can land on the
+                  // scrollbar instead and get misattributed to the row below.
+                  paddingBottom: 6,
+                  marginBottom: -6,
+                }}
+              >
                 {averageRanking.map(({ name, score }) => renderCandidateTag(name, score))}
               </div>
             </div>
@@ -329,7 +336,16 @@ function IdentityListItem({
               >
                 {source}
               </Text>
-              <div style={{ display: "flex", flexWrap: "nowrap", gap: 4, overflowX: "auto" }}>
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "nowrap",
+                  gap: 4,
+                  overflowX: "auto",
+                  paddingBottom: 6,
+                  marginBottom: -6,
+                }}
+              >
                 {candidates.map(({ name, score }) => renderCandidateTag(name, score))}
               </div>
             </div>
@@ -361,7 +377,8 @@ function SearchByNameView({
   onGoTo,
   onConfirm,
   onUnconfirm,
-  onContextMenu,
+  onTagContextMenu,
+  onRowContextMenu,
 }: {
   allRows: IdentityRow[];
   allowUpdate: boolean;
@@ -378,7 +395,8 @@ function SearchByNameView({
   onGoTo: (segment: Segment) => void;
   onConfirm: (segment: Segment, name: string) => void;
   onUnconfirm: (segment: Segment) => void;
-  onContextMenu: (event: MouseEvent<HTMLDivElement>, row: IdentityRow) => void;
+  onTagContextMenu: (event: MouseEvent<HTMLElement>, row: IdentityRow, name: string) => void;
+  onRowContextMenu: (event: MouseEvent<HTMLDivElement>, row: IdentityRow) => void;
 }) {
   // By default ("Exclude confirmed neurons" checked), a segment already
   // confirmed as a DIFFERENT name is excluded from both the results list and
@@ -571,8 +589,8 @@ function SearchByNameView({
               onGoTo={onGoTo}
               onConfirm={onConfirm}
               onUnconfirm={onUnconfirm}
-              onSearchName={onQueryChange}
-              onContextMenu={onContextMenu}
+              onTagContextMenu={onTagContextMenu}
+              onRowContextMenu={onRowContextMenu}
             />
           ))
         )}
@@ -597,8 +615,8 @@ function CurrentSegmentView({
   onGoTo,
   onConfirm,
   onUnconfirm,
-  onSearchName,
-  onContextMenu,
+  onTagContextMenu,
+  onRowContextMenu,
 }: {
   allRows: IdentityRow[];
   allowUpdate: boolean;
@@ -606,8 +624,8 @@ function CurrentSegmentView({
   onGoTo: (segment: Segment) => void;
   onConfirm: (segment: Segment, name: string) => void;
   onUnconfirm: (segment: Segment) => void;
-  onSearchName: (name: string) => void;
-  onContextMenu: (event: MouseEvent<HTMLDivElement>, row: IdentityRow) => void;
+  onTagContextMenu: (event: MouseEvent<HTMLElement>, row: IdentityRow, name: string) => void;
+  onRowContextMenu: (event: MouseEvent<HTMLDivElement>, row: IdentityRow) => void;
 }) {
   const [segmentIdQuery, setSegmentIdQuery] = useState("");
 
@@ -673,8 +691,8 @@ function CurrentSegmentView({
           onGoTo={onGoTo}
           onConfirm={onConfirm}
           onUnconfirm={onUnconfirm}
-          onSearchName={onSearchName}
-          onContextMenu={onContextMenu}
+          onTagContextMenu={onTagContextMenu}
+          onRowContextMenu={onRowContextMenu}
         />
       )}
     </div>
@@ -881,12 +899,6 @@ export default function NeuronIdentityView() {
     }
   };
 
-  const handleMakeActive = (segment: Segment) => {
-    dispatch(
-      setActiveCellAction(segment.id, segment.anchorPosition, segment.additionalCoordinates),
-    );
-  };
-
   const handleResetDecision = (segment: Segment) => {
     if (visibleSegmentationLayer == null) {
       return;
@@ -919,28 +931,6 @@ export default function NeuronIdentityView() {
     );
   };
 
-  const handleSetColor = (segment: Segment, color: Vector3, createsNewUndoState: boolean) => {
-    if (visibleSegmentationLayer == null) {
-      return;
-    }
-    dispatch(
-      updateSegmentAction(
-        segment.id,
-        { color },
-        visibleSegmentationLayer.name,
-        undefined,
-        createsNewUndoState,
-      ),
-    );
-  };
-
-  const handleRemove = (segment: Segment) => {
-    if (visibleSegmentationLayer == null) {
-      return;
-    }
-    dispatch(removeSegmentAction(segment.id, visibleSegmentationLayer.name));
-  };
-
   const hideContextMenu = () => {
     setContextMenuPosition(null);
     setContextMenu(null);
@@ -955,85 +945,64 @@ export default function NeuronIdentityView() {
     }, 0);
   };
 
-  const buildContextMenu = (row: IdentityRow): MenuProps => {
+  // Row right-click (outside a candidate tag): just the ignore toggle — goto
+  // is now the row's plain click, and confirm/color/remove moved to the
+  // tag-level interactions below (or were dropped).
+  const buildRowContextMenu = (row: IdentityRow): MenuProps => {
     const { segment, identity } = row;
     const withHide = (fn: () => void) => () => {
       hideContextMenu();
       fn();
     };
+    return {
+      items: [
+        {
+          key: "toggleIgnored",
+          label: identity.ignored ? "Un-ignore segment" : "Ignore segment (not a neuron)",
+          disabled: !allowUpdate,
+          onClick: withHide(() => handleToggleIgnored(segment, !identity.ignored)),
+        },
+      ],
+    };
+  };
 
-    const items: MenuProps["items"] = [
-      {
-        key: "goto",
-        label:
-          segment.anchorPosition != null ? "Go to segment" : "Go to segment (position unknown)",
-        disabled: segment.anchorPosition == null,
-        onClick: withHide(() => handleGoTo(segment)),
-      },
-      {
-        key: "makeActive",
-        label: "Make active cell",
-        onClick: withHide(() => handleMakeActive(segment)),
-      },
-    ];
-
-    if (allowUpdate) {
-      items.push({ type: "divider" });
-      if (identity.candidates.length > 0) {
-        const averageScoreByName = new Map(
-          averageCandidateRanking(identity.candidates).map((c) => [c.name, c.score]),
-        );
-        items.push({
-          key: "confirmCandidate",
-          label: "Confirm identity",
-          children: identity.candidates.map((candidate) => ({
-            key: `confirm-${candidate.name}`,
-            label: `${candidate.name} ${formatScore(averageScoreByName.get(candidate.name) ?? Number.NEGATIVE_INFINITY)}`,
-            onClick: withHide(() => handleConfirm(segment, candidate.name)),
-          })),
-        });
-      }
-      if (identity.confirmed != null) {
-        items.push({
-          key: "reset",
-          label: "Clear confirmed identity",
-          onClick: withHide(() => handleResetDecision(segment)),
-        });
-      }
-      items.push({
-        key: "toggleIgnored",
-        label: identity.ignored ? "Un-ignore segment" : "Ignore segment (not a neuron)",
-        onClick: withHide(() => handleToggleIgnored(segment, !identity.ignored)),
-      });
-      items.push({ type: "divider" });
-      items.push({
-        key: "color",
-        label: (
-          <ChangeColorMenuItemContent
-            isDisabled={false}
-            title="Change color"
-            onSetColor={(color, createsNewUndoState) =>
-              handleSetColor(segment, color, createsNewUndoState)
+  // Candidate-tag right-click: search for the name elsewhere, or exclude it
+  // from matching entirely (confirm/unconfirm is the tag's plain click).
+  const buildTagContextMenu = (row: IdentityRow, name: string): MenuProps => {
+    const withHide = (fn: () => void) => () => {
+      hideContextMenu();
+      fn();
+    };
+    return {
+      items: [
+        {
+          key: "searchByName",
+          label: "Search by name",
+          onClick: withHide(() => handleSearchName(name)),
+        },
+        {
+          key: "excludeName",
+          label: "Exclude name",
+          disabled: !allowUpdate || ignoredNames.includes(name),
+          onClick: withHide(() => {
+            if (!ignoredNames.includes(name)) {
+              setIgnoredNames([...ignoredNames, name]);
             }
-            rgb={getSegmentColorAsRGBA(Store.getState(), segment.id).slice(0, 3) as Vector3}
-          />
-        ),
-      });
-      items.push({
-        key: "remove",
-        danger: true,
-        label: "Remove from segment list",
-        onClick: withHide(() => handleRemove(segment)),
-      });
-    }
-
-    return { items };
+          }),
+        },
+      ],
+    };
   };
 
   const onRowContextMenu = (event: MouseEvent<HTMLDivElement>, row: IdentityRow) => {
     event.preventDefault();
     const [x, y] = getContextMenuPositionFromEvent(event, CONTEXT_MENU_OVERLAY_CLASS);
-    showContextMenuAt(x, y, buildContextMenu(row));
+    showContextMenuAt(x, y, buildRowContextMenu(row));
+  };
+
+  const onTagContextMenu = (event: MouseEvent<HTMLElement>, row: IdentityRow, name: string) => {
+    const [x, y] = getContextMenuPositionFromEvent(event, CONTEXT_MENU_OVERLAY_CLASS);
+    showContextMenuAt(x, y, buildTagContextMenu(row, name));
   };
 
   if (visibleSegmentationLayer == null) {
@@ -1081,8 +1050,8 @@ export default function NeuronIdentityView() {
               onGoTo={handleGoTo}
               onConfirm={handleConfirm}
               onUnconfirm={handleResetDecision}
-              onSearchName={handleSearchName}
-              onContextMenu={onRowContextMenu}
+              onTagContextMenu={onTagContextMenu}
+              onRowContextMenu={onRowContextMenu}
             />
           </div>
         )}
@@ -1126,7 +1095,8 @@ export default function NeuronIdentityView() {
           onGoTo={handleGoTo}
           onConfirm={handleConfirm}
           onUnconfirm={handleResetDecision}
-          onContextMenu={onRowContextMenu}
+          onTagContextMenu={onTagContextMenu}
+          onRowContextMenu={onRowContextMenu}
         />
       </div>
 
