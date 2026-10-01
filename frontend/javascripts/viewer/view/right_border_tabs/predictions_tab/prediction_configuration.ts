@@ -90,6 +90,12 @@ export function usePredictionConfigurationState() {
   >("loading");
   const [referenceDatasets, setReferenceDatasets] = useState<string[]>([]);
   const [isRunning, setIsRunning] = useState(false);
+  // Snapshot of which names were confirmed at the moment of the most recent
+  // successful Run — null until the first Run completes. Lets consumers
+  // (the Confirmed IDs box) diff "confirmed now" against "confirmed as of
+  // last Run" to show how much has changed since predictions were last
+  // generated, without this hook needing to know anything about rendering.
+  const [lastRunConfirmedNames, setLastRunConfirmedNames] = useState<Set<string> | null>(null);
 
   // Populate the reference-dataset checkboxes from the service itself, rather
   // than hardcoding the list here — it's the service (not the frontend) that
@@ -358,6 +364,18 @@ export function usePredictionConfigurationState() {
     }
     setIsRunning(true);
     try {
+      // Snapshot every currently-confirmed name across ALL segments (not just
+      // this run's targets) — this is the baseline the Confirmed IDs box
+      // diffs against afterward to show what's changed since this Run.
+      const confirmedNamesAtRunStart = new Set<string>();
+      for (const segment of segments.values()) {
+        const confirmed = getSegmentIdentity(segment).confirmed;
+        if (confirmed != null) {
+          confirmedNamesAtRunStart.add(confirmed);
+        }
+      }
+      setLastRunConfirmedNames(confirmedNamesAtRunStart);
+
       // The contact profile's neurons are the prediction targets, regardless
       // of whether they're already in the local segment list — a fresh
       // contact profile commonly references neurons the user hasn't clicked
@@ -465,6 +483,7 @@ export function usePredictionConfigurationState() {
     canRun,
     run,
     writeMergedCandidates,
+    lastRunConfirmedNames,
   };
 }
 
