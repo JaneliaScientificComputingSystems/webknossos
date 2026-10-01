@@ -203,6 +203,8 @@ function IdentityListItem({
   allowUpdate,
   isActive,
   highlightName,
+  confirmedNames,
+  ignoredNameSet,
   onGoTo,
   onConfirm,
   onUnconfirm,
@@ -214,6 +216,10 @@ function IdentityListItem({
   isActive: boolean;
   /** A candidate name to visually call out in this row, e.g. the query in Search by Name. */
   highlightName?: string;
+  /** Every name currently confirmed on ANY segment — a candidate tag whose name is in here but isn't THIS row's own confirmed name is greyed out/disabled (already taken elsewhere). */
+  confirmedNames: Set<string>;
+  /** Names excluded via "Exclude name" (ID Prediction's ignored-names list) — greyed out/disabled, same treatment as confirmed-elsewhere. */
+  ignoredNameSet: Set<string>;
   onGoTo: (segment: Segment) => void;
   onConfirm: (segment: Segment, name: string) => void;
   onUnconfirm: (segment: Segment) => void;
@@ -241,21 +247,34 @@ function IdentityListItem({
 
   const renderCandidateTag = (name: string, score: number) => {
     const isConfirmed = identity.confirmed === name;
+    // Taken by a DIFFERENT segment — the duplicate-name guard in
+    // handleConfirm already prevents confirming it here, so grey it out and
+    // disable interaction rather than let the click just silently fail.
+    const isConfirmedElsewhere = !isConfirmed && confirmedNames.has(name);
+    // Excluded via "Exclude name" — not a real matching candidate anymore,
+    // same greyed-out/disabled treatment as confirmed-elsewhere.
+    const isExcluded = !isConfirmed && ignoredNameSet.has(name);
+    const isGreyedOut = isConfirmedElsewhere || isExcluded;
     const isHighlighted = highlightName != null && name === highlightName;
     const nameColor = colorForName(name);
+    const canInteract = allowUpdate && !isGreyedOut;
     return (
       <Tooltip
         key={name}
         title={
-          allowUpdate
-            ? `Click to ${isConfirmed ? "unconfirm" : "confirm"} — right-click for more options`
-            : "Right-click for more options"
+          isConfirmedElsewhere
+            ? "Already confirmed on a different segment"
+            : isExcluded
+              ? "Excluded from matching"
+              : allowUpdate
+                ? `Click to ${isConfirmed ? "unconfirm" : "confirm"} — right-click for more options`
+                : "Right-click for more options"
         }
       >
         <Tag
           icon={isConfirmed ? <CheckOutlined /> : undefined}
           style={{
-            cursor: "pointer",
+            cursor: canInteract ? "pointer" : "not-allowed",
             marginInlineEnd: 0,
             flexShrink: 0,
             // Deterministic per-name color so the same name is visually
@@ -264,6 +283,11 @@ function IdentityListItem({
             background: nameColor.background,
             color: nameColor.color,
             borderColor: nameColor.background,
+            ...(isGreyedOut && {
+              background: "#f0f0f0",
+              borderColor: "#d9d9d9",
+              color: "#8c8c8c",
+            }),
             ...(isConfirmed && {
               background: "#389e0d",
               borderColor: "#389e0d",
@@ -279,7 +303,7 @@ function IdentityListItem({
               }),
           }}
           onClick={
-            allowUpdate
+            canInteract
               ? (event) => {
                   // Confirm/unconfirm only — stop it from bubbling up to the
                   // row div's own onClick, which selects and navigates.
@@ -430,6 +454,7 @@ function SearchByNameView({
   query,
   onQueryChange,
   ignoredNames,
+  confirmedNames,
   allSources,
   disabledSources,
   onToggleSource,
@@ -446,6 +471,8 @@ function SearchByNameView({
   onQueryChange: (query: string) => void;
   /** Names excluded from autocomplete suggestions (see ID Prediction's ignored-names list). */
   ignoredNames: string[];
+  /** Every name currently confirmed on ANY segment. */
+  confirmedNames: Set<string>;
   /** Every source seen across all segments' candidates — the "Matching scores" checkbox list's population. */
   allSources: string[];
   /** Sources unchecked in "Matching scores" — excluded from display and the cross-source average panel-wide. */
@@ -484,21 +511,6 @@ function SearchByNameView({
   // targeted order than any of these generic options.
   const [sortBy, setSortBy] = useState<SortKey>("confidence");
   const trimmedQuery = query.trim();
-
-  // Every candidate name seen across all segments' predictions/offline-CSV
-  // results so far — the autocomplete's suggestion pool. Local and free (no
-  // network call), but only covers names a prediction has actually surfaced;
-  // a name with zero predictions anywhere won't be suggested even if it's a
-  // real neuron.
-  const confirmedNames = useMemo(() => {
-    const names = new Set<string>();
-    for (const row of allRows) {
-      if (row.identity.confirmed != null) {
-        names.add(row.identity.confirmed);
-      }
-    }
-    return names;
-  }, [allRows]);
 
   const ignoredNameSet = useMemo(() => new Set(ignoredNames), [ignoredNames]);
 
@@ -690,6 +702,8 @@ function SearchByNameView({
               allowUpdate={allowUpdate}
               isActive={activeCellId === row.segment.id}
               highlightName={trimmedQuery.length > 0 ? trimmedQuery : undefined}
+              confirmedNames={confirmedNames}
+              ignoredNameSet={ignoredNameSet}
               onGoTo={onGoTo}
               onConfirm={onConfirm}
               onUnconfirm={onUnconfirm}
@@ -716,6 +730,8 @@ function CurrentSegmentView({
   allRows,
   allowUpdate,
   selectedSegmentId,
+  confirmedNames,
+  ignoredNameSet,
   onGoTo,
   onConfirm,
   onUnconfirm,
@@ -725,6 +741,10 @@ function CurrentSegmentView({
   allRows: IdentityRow[];
   allowUpdate: boolean;
   selectedSegmentId: bigint | undefined;
+  /** Every name currently confirmed on ANY segment. */
+  confirmedNames: Set<string>;
+  /** Names excluded via "Exclude name" (ID Prediction's ignored-names list). */
+  ignoredNameSet: Set<string>;
   onGoTo: (segment: Segment) => void;
   onConfirm: (segment: Segment, name: string) => void;
   onUnconfirm: (segment: Segment) => void;
@@ -792,6 +812,8 @@ function CurrentSegmentView({
           row={currentRow}
           allowUpdate={allowUpdate}
           isActive
+          confirmedNames={confirmedNames}
+          ignoredNameSet={ignoredNameSet}
           onGoTo={onGoTo}
           onConfirm={onConfirm}
           onUnconfirm={onUnconfirm}
@@ -836,6 +858,7 @@ function NeuronIdentityPanel() {
     isRunning,
     canRun,
     run,
+    lastRunConfirmedNames,
   } = usePredictionConfiguration();
   // Sources (e.g. "prediction:adult", "morphology_scores") excluded from
   // display and from the cross-source average everywhere in this panel —
@@ -937,6 +960,38 @@ function NeuronIdentityPanel() {
     () => allRows.filter((row) => row.status === "confirmed").length,
     [allRows],
   );
+  const ignoredNameSet = useMemo(() => new Set(ignoredNames), [ignoredNames]);
+  // Current confirmed names vs. the snapshot taken at the last successful
+  // Run — lets the Confirmed IDs box show "N new seeds, M removed" and
+  // highlight newly-confirmed tags, so it's obvious when predictions are
+  // stale relative to the confirmed set.
+  const currentConfirmedNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const row of allRows) {
+      if (row.identity.confirmed != null) {
+        names.add(row.identity.confirmed);
+      }
+    }
+    return names;
+  }, [allRows]);
+  const confirmedNamesDiff = useMemo(() => {
+    if (lastRunConfirmedNames == null) {
+      return null;
+    }
+    let newCount = 0;
+    for (const name of currentConfirmedNames) {
+      if (!lastRunConfirmedNames.has(name)) {
+        newCount += 1;
+      }
+    }
+    let removedCount = 0;
+    for (const name of lastRunConfirmedNames) {
+      if (!currentConfirmedNames.has(name)) {
+        removedCount += 1;
+      }
+    }
+    return { newCount, removedCount };
+  }, [currentConfirmedNames, lastRunConfirmedNames]);
   const ignoredCount = useMemo(
     () => allRows.filter((row) => row.identity.ignored).length,
     [allRows],
@@ -1168,6 +1223,8 @@ function NeuronIdentityPanel() {
               allRows={allRows}
               allowUpdate={allowUpdate}
               selectedSegmentId={selectedSegmentId}
+              confirmedNames={currentConfirmedNames}
+              ignoredNameSet={ignoredNameSet}
               onGoTo={handleGoTo}
               onConfirm={handleConfirm}
               onUnconfirm={handleResetDecision}
@@ -1210,6 +1267,7 @@ function NeuronIdentityPanel() {
           query={searchByNameQuery}
           onQueryChange={setSearchByNameQuery}
           ignoredNames={ignoredNames}
+          confirmedNames={currentConfirmedNames}
           allSources={allSources}
           disabledSources={disabledSources}
           onToggleSource={handleToggleSource}
@@ -1250,6 +1308,14 @@ function NeuronIdentityPanel() {
             Run prediction{selectedReferenceDatasets.size > 1 ? "s" : ""}
           </Button>
         </Tooltip>
+        {confirmedNamesDiff != null &&
+          (confirmedNamesDiff.newCount > 0 || confirmedNamesDiff.removedCount > 0) && (
+            <Text style={{ display: "block", fontSize: 12, marginTop: 4 }}>
+              {confirmedNamesDiff.newCount} new seed{confirmedNamesDiff.newCount === 1 ? "" : "s"},{" "}
+              {confirmedNamesDiff.removedCount} seed
+              {confirmedNamesDiff.removedCount === 1 ? "" : "s"} removed since last prediction
+            </Text>
+          )}
       </div>
 
       <div
@@ -1284,30 +1350,42 @@ function NeuronIdentityPanel() {
                   row.identity.confirmed != null,
               )
               .sort((a, b) => a.identity.confirmed.localeCompare(b.identity.confirmed))
-              .map((row) => (
-                <Tooltip
-                  key={row.segment.id}
-                  title={
-                    allowUpdate ? "Click to select — right-click to unconfirm" : "Click to select"
-                  }
-                >
-                  <Tag
-                    color="green"
-                    style={{ cursor: "pointer", color: "black" }}
-                    onClick={() => handleGoTo(row.segment)}
-                    onContextMenu={
-                      allowUpdate
-                        ? (event) => {
-                            event.preventDefault();
-                            handleResetDecision(row.segment);
-                          }
-                        : undefined
+              .map((row) => {
+                // Brighter green for a name confirmed since the last
+                // successful Run — lastRunConfirmedNames == null (never run
+                // yet) intentionally shows everything as "new".
+                const isNewSinceLastRun =
+                  lastRunConfirmedNames == null ||
+                  !lastRunConfirmedNames.has(row.identity.confirmed);
+                return (
+                  <Tooltip
+                    key={row.segment.id}
+                    title={
+                      allowUpdate ? "Click to select — right-click to unconfirm" : "Click to select"
                     }
                   >
-                    {row.identity.confirmed} (#{row.segment.id})
-                  </Tag>
-                </Tooltip>
-              ))}
+                    <Tag
+                      style={{
+                        cursor: "pointer",
+                        color: "black",
+                        background: isNewSinceLastRun ? "#52c41a" : "#b7eb8f",
+                        borderColor: isNewSinceLastRun ? "#389e0d" : "#95de64",
+                      }}
+                      onClick={() => handleGoTo(row.segment)}
+                      onContextMenu={
+                        allowUpdate
+                          ? (event) => {
+                              event.preventDefault();
+                              handleResetDecision(row.segment);
+                            }
+                          : undefined
+                      }
+                    >
+                      {row.identity.confirmed} (#{row.segment.id})
+                    </Tag>
+                  </Tooltip>
+                );
+              })}
           </div>
         )}
         {isConfirmedIdsExpanded && (
