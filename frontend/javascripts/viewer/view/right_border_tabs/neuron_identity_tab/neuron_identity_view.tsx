@@ -277,7 +277,10 @@ function IdentityListItem({
           }}
           onClick={
             allowUpdate
-              ? () => {
+              ? (event) => {
+                  // Confirm/unconfirm only — stop it from bubbling up to the
+                  // row div's own onClick, which selects and navigates.
+                  event.stopPropagation();
                   if (isConfirmed) {
                     onUnconfirm(segment);
                   } else {
