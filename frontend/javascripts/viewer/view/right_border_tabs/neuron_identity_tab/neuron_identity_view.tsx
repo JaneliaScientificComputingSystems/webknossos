@@ -4,6 +4,7 @@ import {
   CaretUpOutlined,
   CheckOutlined,
   CloseOutlined,
+  ThunderboltOutlined,
 } from "@ant-design/icons";
 import {
   AutoComplete,
@@ -43,6 +44,10 @@ import { rgbaToCSS } from "viewer/shaders/utils.glsl";
 import type { Segment } from "viewer/store";
 import Store from "viewer/store";
 import { getContextMenuPositionFromEvent } from "viewer/view/context_menu/helpers";
+import {
+  PredictionConfigurationProvider,
+  usePredictionConfiguration,
+} from "viewer/view/right_border_tabs/predictions_tab/prediction_configuration_context";
 import PredictionsView from "viewer/view/right_border_tabs/predictions_tab/predictions_view";
 import { ContextMenuContainer } from "viewer/view/right_border_tabs/sidebar_context_menu";
 import {
@@ -171,9 +176,7 @@ function groupCandidatesBySource(
 }
 
 /** Candidate names ranked by their cross-source average score (missing source = 0), for the "average" summary row. */
-function averageCandidateRanking(
-  candidates: CandidateScores[],
-): { name: string; score: number }[] {
+function averageCandidateRanking(candidates: CandidateScores[]): { name: string; score: number }[] {
   const sources = allSourcesFor(candidates);
   return candidates
     .map((candidate) => ({ name: candidate.name, score: averageScore(candidate, sources) }))
@@ -334,9 +337,7 @@ function IdentityListItem({
         >
           <AimOutlined style={{ opacity: segment.anchorPosition == null ? 0.3 : 1 }} />
         </Tooltip>
-        <Text style={{ fontVariantNumeric: "tabular-nums" }}>
-          #{segment.id}
-        </Text>
+        <Text style={{ fontVariantNumeric: "tabular-nums" }}>#{segment.id}</Text>
         <Text strong ellipsis style={{ flex: 1 }}>
           {displayName ?? <Text>unnamed</Text>}
         </Text>
@@ -411,7 +412,6 @@ function IdentityListItem({
           ))}
         </div>
       )}
-
     </div>
   );
 }
@@ -624,7 +624,15 @@ function SearchByNameView({
           )}
         </div>
         {allSources.length > 0 && (
-          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: 8,
+              marginTop: 8,
+            }}
+          >
             <Text style={{ fontSize: 12, flex: "0 0 auto" }}>Matching scores:</Text>
             {allSources.map((source) => (
               <Checkbox
@@ -796,6 +804,14 @@ function CurrentSegmentView({
 }
 
 export default function NeuronIdentityView() {
+  return (
+    <PredictionConfigurationProvider>
+      <NeuronIdentityPanel />
+    </PredictionConfigurationProvider>
+  );
+}
+
+function NeuronIdentityPanel() {
   const dispatch = useDispatch();
   const [contextMenuPosition, setContextMenuPosition] = useState<[number, number] | null>(null);
   const [contextMenu, setContextMenu] = useState<MenuProps | null>(null);
@@ -808,10 +824,19 @@ export default function NeuronIdentityView() {
     setSearchByNameQuery(name);
     setSubTab("searchByName");
   };
-  // Names excluded from the reference contactome used for live Run matching
-  // (ID Prediction tab) and from Search by Name's autocomplete suggestions —
-  // lifted here so both tabs see the same list. Not persisted.
-  const [ignoredNames, setIgnoredNames] = useState<string[]>([]);
+  // ignoredNames and the rest of the ID-prediction feature's state (contact
+  // profile, selected reference datasets, isRunning) live in
+  // PredictionConfigurationContext — shared, via that context, with
+  // PredictionsView's own controls and the always-visible Run button below.
+  const {
+    ignoredNames,
+    setIgnoredNames,
+    selectedReferenceDatasets,
+    contactEdges,
+    isRunning,
+    canRun,
+    run,
+  } = usePredictionConfiguration();
   // Sources (e.g. "prediction:adult", "morphology_scores") excluded from
   // display and from the cross-source average everywhere in this panel —
   // session-local like ignoredNames, not persisted. null means "not
@@ -1064,7 +1089,7 @@ export default function NeuronIdentityView() {
 
   // Candidate-tag right-click: search for the name elsewhere, or exclude it
   // from matching entirely (confirm/unconfirm is the tag's plain click).
-  const buildTagContextMenu = (row: IdentityRow, name: string): MenuProps => {
+  const buildTagContextMenu = (name: string): MenuProps => {
     const withHide = (fn: () => void) => () => {
       hideContextMenu();
       fn();
@@ -1096,9 +1121,9 @@ export default function NeuronIdentityView() {
     showContextMenuAt(x, y, buildRowContextMenu(row));
   };
 
-  const onTagContextMenu = (event: MouseEvent<HTMLElement>, row: IdentityRow, name: string) => {
+  const onTagContextMenu = (event: MouseEvent<HTMLElement>, _row: IdentityRow, name: string) => {
     const [x, y] = getContextMenuPositionFromEvent(event, CONTEXT_MENU_OVERLAY_CLASS);
-    showContextMenuAt(x, y, buildTagContextMenu(row, name));
+    showContextMenuAt(x, y, buildTagContextMenu(name));
   };
 
   if (visibleSegmentationLayer == null) {
@@ -1173,7 +1198,7 @@ export default function NeuronIdentityView() {
       <div
         style={{ flex: 1, minHeight: 0, display: subTab === "predictions" ? undefined : "none" }}
       >
-        <PredictionsView ignoredNames={ignoredNames} onIgnoredNamesChange={setIgnoredNames} />
+        <PredictionsView />
       </div>
       <div
         style={{ flex: 1, minHeight: 0, display: subTab === "searchByName" ? undefined : "none" }}
@@ -1203,6 +1228,37 @@ export default function NeuronIdentityView() {
           flex: "0 0 auto",
         }}
       >
+        <Tooltip
+          title={
+            !allowUpdate
+              ? "Open an editable annotation to run prediction."
+              : contactEdges.length === 0
+                ? "Upload a contact profile first."
+                : selectedReferenceDatasets.size === 0
+                  ? "Check at least one reference dataset first."
+                  : undefined
+          }
+        >
+          <Button
+            type="primary"
+            icon={<ThunderboltOutlined />}
+            disabled={!canRun}
+            loading={isRunning}
+            onClick={run}
+            block
+          >
+            Run prediction{selectedReferenceDatasets.size > 1 ? "s" : ""}
+          </Button>
+        </Tooltip>
+      </div>
+
+      <div
+        style={{
+          padding: 8,
+          borderTop: "1px solid var(--color-wk-border, rgba(128,128,128,0.2))",
+          flex: "0 0 auto",
+        }}
+      >
         <Button
           type="text"
           size="small"
@@ -1219,7 +1275,9 @@ export default function NeuronIdentityView() {
           </Text>
         )}
         {isConfirmedIdsExpanded && confirmedCount > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, maxHeight: 80, overflowY: "auto" }}>
+          <div
+            style={{ display: "flex", flexWrap: "wrap", gap: 4, maxHeight: 80, overflowY: "auto" }}
+          >
             {allRows
               .filter(
                 (row): row is IdentityRow & { identity: { confirmed: string } } =>
