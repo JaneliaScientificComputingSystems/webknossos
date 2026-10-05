@@ -110,7 +110,12 @@ export async function getReferenceDatasetNeurons(
   );
 }
 
-/** PUT a CSV of externally-computed candidate predictions ("seg"/"neuron"/"score" columns), stored server-side per datasetId. */
+/** URL for the service's neuron diagram image (JPEG), suitable for direct use as an <img> src. 404s if no diagram is available for that name. */
+export function getNeuronDiagramUrl(neuronName: string): string {
+  return `${getBaseUrl()}/neuron_diagrams/${encodeURIComponent(neuronName)}`;
+}
+
+/** PUT a CSV of externally-computed candidate predictions ("seg"/"neuron"/"score" columns) for parsing; the service does not persist these, it just parses and returns them. */
 export async function uploadOfflinePredictions(
   datasetId: string,
   file: File,
@@ -120,12 +125,5 @@ export async function uploadOfflinePredictions(
   return fetchJson<OfflinePredictionsPayload>(
     `/offline_predictions/${encodeURIComponent(datasetId)}`,
     { method: "PUT", body: formData },
-  );
-}
-
-/** GET the previously-uploaded offline predictions for a dataset, if any. */
-export async function getOfflinePredictions(datasetId: string): Promise<OfflinePredictionsPayload> {
-  return fetchJson<OfflinePredictionsPayload>(
-    `/offline_predictions/${encodeURIComponent(datasetId)}`,
   );
 }

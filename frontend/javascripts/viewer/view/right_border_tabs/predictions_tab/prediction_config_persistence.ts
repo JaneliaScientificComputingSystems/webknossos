@@ -21,6 +21,8 @@ export type PersistedPredictionConfig = {
   ignoredNames: string[];
   /** Names confirmed at the moment of the most recent successful Run — null if no Run has completed yet. Serialized as an array (JSON has no Set type); callers convert to/from Set at the boundary. */
   lastRunConfirmedNames: string[] | null;
+  /** Reference datasets checked in the Configuration tab. Serialized as an array (JSON has no Set type); callers convert to/from Set at the boundary. */
+  selectedReferenceDatasets: string[];
 };
 
 /** Strips the fenced config block (if any) from a saved description, returning just the human-written part. */
@@ -62,6 +64,11 @@ export function parseConfigFromDescription(description: string): PersistedPredic
             (name: unknown): name is string => typeof name === "string",
           )
         : null,
+      selectedReferenceDatasets: Array.isArray(parsed.selectedReferenceDatasets)
+        ? parsed.selectedReferenceDatasets.filter(
+            (name: unknown): name is string => typeof name === "string",
+          )
+        : [],
     };
   } catch (_exception) {
     return null;

@@ -11,7 +11,9 @@ import {
   Button,
   Checkbox,
   Empty,
+  Input,
   type MenuProps,
+  Modal,
   Select,
   Tabs,
   Tag,
@@ -44,6 +46,7 @@ import { rgbaToCSS } from "viewer/shaders/utils.glsl";
 import type { Segment } from "viewer/store";
 import Store from "viewer/store";
 import { getContextMenuPositionFromEvent } from "viewer/view/context_menu/helpers";
+import { getNeuronDiagramUrl } from "viewer/view/right_border_tabs/predictions_tab/prediction_client";
 import {
   PredictionConfigurationProvider,
   usePredictionConfiguration,
@@ -196,6 +199,33 @@ function averageScoreForName(identity: SegmentIdentity, name: string): number {
     return Number.NEGATIVE_INFINITY;
   }
   return averageScore(candidate, allSourcesFor(identity.candidates));
+}
+
+/**
+ * Preview of the service's reference diagram for a neuron name, shown in the
+ * "Neuron diagram" section. Falls back to an explanatory message (rather than
+ * a broken-image icon) if the service has no diagram for this name — a 404 is
+ * an expected, common case (not every reference neuron has one), not an error
+ * worth surfacing as such.
+ */
+function NeuronDiagram({ name }: { name: string }) {
+  const [failedName, setFailedName] = useState<string | null>(null);
+  if (failedName === name) {
+    return (
+      <Text style={{ display: "block", fontSize: 12, marginTop: 4 }}>
+        No diagram available for "{name}".
+      </Text>
+    );
+  }
+  return (
+    <img
+      key={name}
+      src={getNeuronDiagramUrl(name)}
+      alt={`Reference diagram for ${name}`}
+      onError={() => setFailedName(name)}
+      style={{ maxWidth: "100%", display: "block", marginTop: 4, borderRadius: 2 }}
+    />
+  );
 }
 
 function IdentityListItem({
@@ -502,6 +532,9 @@ function SearchByNameView({
   // for comparing sources apples-to-apples instead of segments where most
   // sources simply never ran.
   const [requireAllEnabledSources, setRequireAllEnabledSources] = useState(false);
+  // Collapsed by default to save vertical space — these are occasional-use
+  // filters, unlike Sort by/Search by name above, which stay visible always.
+  const [areFiltersExpanded, setAreFiltersExpanded] = useState(false);
   const enabledSources = useMemo(
     () => allSources.filter((source) => !disabledSources.has(source)),
     [allSources, disabledSources],
@@ -602,7 +635,7 @@ function SearchByNameView({
             value={sortBy}
             onChange={setSortBy}
             disabled={trimmedQuery.length > 0}
-            style={{ width: 140 }}
+            style={{ width: 110 }}
             options={[
               { label: "Confidence", value: "confidence" },
               { label: "Segment ID", value: "id" },
@@ -617,6 +650,12 @@ function SearchByNameView({
             size="small"
             placeholder="Name…"
             style={{ flex: 1 }}
+            // The dropdown otherwise mirrors the trigger's flex-computed
+            // width, which can momentarily shrink (e.g. when the Clear
+            // button mounts/unmounts as query changes) and truncate option
+            // labels like "ADAL" down to "A…" — size the dropdown to its own
+            // content instead.
+            popupMatchSelectWidth={false}
             onKeyDown={(event) => {
               if (event.key === "Escape" && query.length > 0) {
                 event.stopPropagation();
@@ -635,51 +674,65 @@ function SearchByNameView({
             </Tooltip>
           )}
         </div>
-        {allSources.length > 0 && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              flexWrap: "wrap",
-              gap: 8,
-              marginTop: 8,
-            }}
-          >
-            <Text style={{ fontSize: 12, flex: "0 0 auto" }}>Matching scores:</Text>
-            {allSources.map((source) => (
-              <Checkbox
-                key={source}
-                checked={!disabledSources.has(source)}
-                onChange={(event) => onToggleSource(source, event.target.checked)}
-                style={{ fontSize: 12, marginInlineStart: 0 }}
+        <Button
+          type="text"
+          size="small"
+          style={{ padding: 0, height: "auto", fontWeight: "bold", fontSize: 12, marginTop: 8 }}
+          icon={areFiltersExpanded ? <CaretUpOutlined /> : <CaretDownOutlined />}
+          iconPosition="end"
+          onClick={() => setAreFiltersExpanded((expanded) => !expanded)}
+        >
+          Filters
+        </Button>
+        {areFiltersExpanded && (
+          <>
+            {allSources.length > 0 && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: 8,
+                  marginTop: 8,
+                }}
               >
-                {source}
+                <Text style={{ fontSize: 12, flex: "0 0 auto" }}>Matching scores:</Text>
+                {allSources.map((source) => (
+                  <Checkbox
+                    key={source}
+                    checked={!disabledSources.has(source)}
+                    onChange={(event) => onToggleSource(source, event.target.checked)}
+                    style={{ fontSize: 12, marginInlineStart: 0 }}
+                  >
+                    {source}
+                  </Checkbox>
+                ))}
+              </div>
+            )}
+            <Checkbox
+              checked={!includeConfirmedElsewhere}
+              onChange={(event) => setIncludeConfirmedElsewhere(!event.target.checked)}
+              style={{ marginTop: 8, fontSize: 12 }}
+            >
+              Exclude confirmed neurons
+            </Checkbox>
+            <Checkbox
+              checked={!includeIgnored}
+              onChange={(event) => setIncludeIgnored(!event.target.checked)}
+              style={{ marginTop: 4, marginInlineStart: 0, fontSize: 12 }}
+            >
+              Exclude ignored segments
+            </Checkbox>
+            {enabledSources.length > 1 && (
+              <Checkbox
+                checked={requireAllEnabledSources}
+                onChange={(event) => setRequireAllEnabledSources(event.target.checked)}
+                style={{ marginTop: 4, marginInlineStart: 0, fontSize: 12 }}
+              >
+                Exclude segments missing scores
               </Checkbox>
-            ))}
-          </div>
-        )}
-        <Checkbox
-          checked={!includeConfirmedElsewhere}
-          onChange={(event) => setIncludeConfirmedElsewhere(!event.target.checked)}
-          style={{ marginTop: 8, fontSize: 12 }}
-        >
-          Exclude confirmed neurons
-        </Checkbox>
-        <Checkbox
-          checked={!includeIgnored}
-          onChange={(event) => setIncludeIgnored(!event.target.checked)}
-          style={{ marginTop: 4, marginInlineStart: 0, fontSize: 12 }}
-        >
-          Exclude ignored segments
-        </Checkbox>
-        {enabledSources.length > 1 && (
-          <Checkbox
-            checked={requireAllEnabledSources}
-            onChange={(event) => setRequireAllEnabledSources(event.target.checked)}
-            style={{ marginTop: 4, marginInlineStart: 0, fontSize: 12 }}
-          >
-            Exclude segments missing scores
-          </Checkbox>
+            )}
+          </>
         )}
       </div>
 
@@ -838,13 +891,41 @@ function NeuronIdentityPanel() {
   const [contextMenuPosition, setContextMenuPosition] = useState<[number, number] | null>(null);
   const [contextMenu, setContextMenu] = useState<MenuProps | null>(null);
   const [subTab, setSubTab] = useState<"predictions" | "searchByName">("searchByName");
+  // The segment currently being named via the row context menu's "Assign
+  // name…" modal — a typed free-text entry point for names that aren't among
+  // a segment's predicted candidates, distinct from confirming an existing
+  // candidate tag.
+  const [assigningSegment, setAssigningSegment] = useState<Segment | null>(null);
+  const [assignNameInput, setAssignNameInput] = useState("");
   // Search by Name's query, lifted here so clicking a candidate tag anywhere
   // (including the main Proofreading list) can populate it and jump to that
   // tab, not just from within Search by Name's own result rows.
   const [searchByNameQuery, setSearchByNameQuery] = useState("");
+  // Which candidate name's reference diagram to show in the "Neuron diagram"
+  // section — set via a candidate tag's right-click menu ("View diagram") or
+  // by searching by name below, not tied to the current segment selection,
+  // so it stays put while the user clicks around comparing candidates across
+  // segments.
+  const [diagramName, setDiagramName] = useState<string | null>(null);
+  const [isDiagramExpanded, setIsDiagramExpanded] = useState(true);
   const handleSearchName = (name: string) => {
     setSearchByNameQuery(name);
     setSubTab("searchByName");
+    setDiagramName(name);
+  };
+  // Typing directly into Search by Name's box also populates the diagram
+  // section once the query exactly matches a known candidate name (but
+  // doesn't force the section open if the user collapsed it) — showing a
+  // diagram for every in-progress keystroke ("a", "ad", "ada", …) would just
+  // be a flurry of guaranteed-404 requests until the name is fully typed.
+  // Clearing the query (back to "") leaves whatever diagram was last shown in
+  // place, rather than blanking the section.
+  const handleSearchByNameQueryChange = (query: string) => {
+    setSearchByNameQuery(query);
+    const trimmed = query.trim();
+    if (trimmed.length > 0 && allRows.some((row) => row.identity.candidates.some((c) => c.name === trimmed))) {
+      setDiagramName(trimmed);
+    }
   };
   // ignoredNames and the rest of the ID-prediction feature's state (contact
   // profile, selected reference datasets, isRunning) live in
@@ -1121,9 +1202,9 @@ function NeuronIdentityPanel() {
     }, 0);
   };
 
-  // Row right-click (outside a candidate tag): just the ignore toggle — goto
-  // is now the row's plain click, and confirm/color/remove moved to the
-  // tag-level interactions below (or were dropped).
+  // Row right-click (outside a candidate tag): the ignore toggle and manual
+  // name assignment — goto is now the row's plain click, and confirm/color/
+  // remove moved to the tag-level interactions below (or were dropped).
   const buildRowContextMenu = (row: IdentityRow): MenuProps => {
     const { segment, identity } = row;
     const withHide = (fn: () => void) => () => {
@@ -1132,6 +1213,15 @@ function NeuronIdentityPanel() {
     };
     return {
       items: [
+        {
+          key: "assignName",
+          label: "Assign name…",
+          disabled: !allowUpdate,
+          onClick: withHide(() => {
+            setAssigningSegment(segment);
+            setAssignNameInput(identity.confirmed ?? "");
+          }),
+        },
         {
           key: "toggleIgnored",
           label: identity.ignored ? "Un-ignore segment" : "Ignore segment (not a neuron)",
@@ -1151,6 +1241,11 @@ function NeuronIdentityPanel() {
     };
     return {
       items: [
+        {
+          key: "viewDiagram",
+          label: "View diagram",
+          onClick: withHide(() => setDiagramName(name)),
+        },
         {
           key: "searchByName",
           label: "Search by name",
@@ -1191,6 +1286,18 @@ function NeuronIdentityPanel() {
     );
   }
 
+  const handleAssignNameSubmit = () => {
+    if (assigningSegment == null) {
+      return;
+    }
+    const trimmed = assignNameInput.trim();
+    if (trimmed.length === 0) {
+      return;
+    }
+    handleConfirm(assigningSegment, trimmed);
+    setAssigningSegment(null);
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ContextMenuContainer
@@ -1199,6 +1306,27 @@ function NeuronIdentityPanel() {
         menu={contextMenu}
         className={CONTEXT_MENU_OVERLAY_CLASS}
       />
+
+      <Modal
+        title={
+          assigningSegment != null
+            ? `Assign name to segment #${assigningSegment.id}`
+            : "Assign name"
+        }
+        open={assigningSegment != null}
+        onCancel={() => setAssigningSegment(null)}
+        onOk={handleAssignNameSubmit}
+        okButtonProps={{ disabled: assignNameInput.trim().length === 0 }}
+        destroyOnHidden
+      >
+        <Input
+          value={assignNameInput}
+          onChange={(event) => setAssignNameInput(event.target.value)}
+          onPressEnter={handleAssignNameSubmit}
+          placeholder="Neuron name…"
+          autoFocus
+        />
+      </Modal>
 
       <div
         style={{
@@ -1235,6 +1363,33 @@ function NeuronIdentityPanel() {
         )}
       </div>
 
+      <div
+        style={{
+          padding: 8,
+          borderBottom: "1px solid var(--color-wk-border, rgba(128,128,128,0.2))",
+          flex: "0 0 auto",
+        }}
+      >
+        <Button
+          type="text"
+          size="small"
+          style={{ padding: 0, height: "auto", fontWeight: "bold", fontSize: 12 }}
+          icon={isDiagramExpanded ? <CaretUpOutlined /> : <CaretDownOutlined />}
+          iconPosition="end"
+          onClick={() => setIsDiagramExpanded((expanded) => !expanded)}
+        >
+          Neuron diagram{diagramName != null ? `: ${diagramName}` : ""}
+        </Button>
+        {isDiagramExpanded &&
+          (diagramName == null ? (
+            <Text style={{ display: "block", fontSize: 12, marginTop: 4 }}>
+              Right-click a candidate name and choose "View diagram".
+            </Text>
+          ) : (
+            <NeuronDiagram name={diagramName} />
+          ))}
+      </div>
+
       <Tabs
         activeKey={subTab}
         onChange={(key) => setSubTab(key as "predictions" | "searchByName")}
@@ -1265,7 +1420,7 @@ function NeuronIdentityPanel() {
           allowUpdate={allowUpdate}
           activeCellId={activeCellId}
           query={searchByNameQuery}
-          onQueryChange={setSearchByNameQuery}
+          onQueryChange={handleSearchByNameQueryChange}
           ignoredNames={ignoredNames}
           confirmedNames={currentConfirmedNames}
           allSources={allSources}
