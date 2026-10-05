@@ -8,7 +8,7 @@ import {
   countDistinctNeurons,
   parseContactProfile,
 } from "viewer/view/right_border_tabs/predictions_tab/contact_profile";
-import { uploadOfflinePredictions } from "viewer/view/right_border_tabs/predictions_tab/prediction_client";
+import { parseOfflinePredictions } from "viewer/view/right_border_tabs/predictions_tab/offline_predictions";
 import { usePredictionConfiguration } from "viewer/view/right_border_tabs/predictions_tab/prediction_configuration_context";
 
 const { Text } = Typography;
@@ -16,7 +16,6 @@ const { Text } = Typography;
 export default function PredictionsView() {
   const {
     allowUpdate,
-    datasetId,
     ignoredNames,
     setIgnoredNames,
     contactEdges,
@@ -65,21 +64,38 @@ export default function PredictionsView() {
     }
     setIsUploadingOfflinePredictions(true);
     try {
-      const response = await uploadOfflinePredictions(datasetId, file);
+      const contents = await readFileAsText(file);
+      const { predictions, isSeeds, skippedRowCount } = parseOfflinePredictions(contents);
+      if (predictions.length === 0) {
+        Toast.error("No valid rows found in this file.");
+        return;
+      }
       // Use the filename without its extension as the solution/source name
       // (e.g. "morphology_scores.csv" -> "morphology_scores") — shorter and
       // more readable than the full filename wherever the source shows up
       // (candidate tooltips, the per-source row label, raw metadata keys).
       const sourceName = file.name.replace(/\.[^./]+$/, "");
-      const { written, createdCount, positionedCount } = await writeMergedCandidates(
-        sourceName,
-        response.predictions,
-      );
-      Toast.success(
-        createdCount > 0
-          ? `Wrote offline predictions to ${written} segment(s) (${createdCount} newly added to the segment list, ${positionedCount} with a known position).`
-          : `Wrote offline predictions to ${written} segment(s).`,
-      );
+      const { written, createdCount, positionedCount, confirmedCount, skippedConfirmCount } =
+        await writeMergedCandidates(sourceName, predictions, { autoConfirm: isSeeds });
+      if (skippedRowCount > 0) {
+        Toast.info(`Skipped ${skippedRowCount} row(s) that didn't fit the expected format.`);
+      }
+      const createdPart =
+        createdCount > 0 ? `, ${createdCount} newly added to the segment list` : "";
+      const positionedPart = createdCount > 0 ? `, ${positionedCount} with a known position` : "";
+      if (isSeeds) {
+        const skippedPart =
+          skippedConfirmCount > 0
+            ? ` (${skippedConfirmCount} left unconfirmed due to a conflicting name — sort by confidence to review)`
+            : "";
+        Toast.success(
+          `Wrote seeds to ${written} segment(s), confirmed ${confirmedCount}${skippedPart}${createdPart}${positionedPart}.`,
+        );
+      } else {
+        Toast.success(
+          `Wrote offline predictions to ${written} segment(s)${createdPart}${positionedPart}.`,
+        );
+      }
     } catch (exception) {
       Toast.error(
         exception instanceof Error ? exception.message : "Could not upload offline predictions.",
@@ -212,9 +228,14 @@ export default function PredictionsView() {
         Upload Offline Predictions
       </Text>
       <Text style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
-        Upload a CSV with header rows "seg" (segment ID), "neuron" (a neuron name), and "score"
-        columns. Filename will be used as prediction name. Ideally scores are in confidence
-        percentage space to they can be averaged with other confidence scores.
+        Upload a CSV with "seg" (segment ID) and "neuron" (a neuron name) columns. Filename is used
+        as the prediction source name.
+        <br />
+        With a "score" column: candidate scores, written for proofreading like a live Run. Ideally
+        in confidence percentage space so they can be averaged with other confidence scores.
+        <br />
+        Without a "score" column: ground-truth seeds — written at 100% and auto-confirmed, skipping
+        any row whose name conflicts with an existing confirmation elsewhere.
       </Text>
       <Upload
         name="offlinePredictions"
@@ -226,7 +247,7 @@ export default function PredictionsView() {
         disabled={!allowUpdate || isUploadingOfflinePredictions}
       >
         <Button icon={<UploadOutlined />} loading={isUploadingOfflinePredictions}>
-          Upload offline predictions CSV…
+          Upload offline predictions or seeds CSV…
         </Button>
       </Upload>
     </div>
