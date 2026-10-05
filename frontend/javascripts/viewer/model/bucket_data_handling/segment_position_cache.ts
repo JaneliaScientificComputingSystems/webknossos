@@ -31,13 +31,14 @@
  * locally, never used to create a new segment-list entry — scrolling past a
  * segment you're not otherwise working with shouldn't silently add it.
  */
+
+import Constants, { type Vector3 } from "viewer/constants";
 import { getSegmentationLayerByName } from "viewer/model/accessors/dataset_accessor";
 import { getSegmentsForLayer } from "viewer/model/accessors/volumetracing_accessor";
 import {
   batchUpdateGroupsAndSegmentsAction,
   updateSegmentAction,
 } from "viewer/model/actions/volumetracing_actions";
-import Constants, { type Vector3 } from "viewer/constants";
 import { listenToStoreProperty } from "viewer/model/helpers/listener_helpers";
 import Store from "viewer/store";
 import type { DataBucket } from "./bucket";
@@ -77,11 +78,7 @@ function localIndexToGlobalPosition(bucket: DataBucket, linearIndex: number): Ve
   const x = remainder % width;
   const origin = bucket.getGlobalPosition();
   const bucketMag = bucket.cube.magInfo.getMagByIndexOrThrow(bucket.zoomedAddress[3]);
-  return [
-    origin[0] + x * bucketMag[0],
-    origin[1] + y * bucketMag[1],
-    origin[2] + z * bucketMag[2],
-  ];
+  return [origin[0] + x * bucketMag[0], origin[1] + y * bucketMag[1], origin[2] + z * bucketMag[2]];
 }
 
 /** Record one real voxel position per not-yet-seen segment ID in this bucket, keyed by this layer. */
@@ -104,7 +101,8 @@ function recordBucket(layerName: string, bucket: DataBucket): void {
   const data = bucket.getData();
   const newlyDiscovered = new Map<bigint, Vector3>();
   for (let index = 0; index < data.length && idsToLocate.size > 0; index++) {
-    const segmentId = typeof data[index] === "bigint" ? (data[index] as bigint) : BigInt(data[index]);
+    const segmentId =
+      typeof data[index] === "bigint" ? (data[index] as bigint) : BigInt(data[index]);
     if (idsToLocate.has(segmentId)) {
       const position = localIndexToGlobalPosition(bucket, index);
       cache.set(segmentId, position);
@@ -228,10 +226,7 @@ function watchSegmentListForLayer(layerName: string): void {
  * non-segmentation buckets. Safe to call unconditionally; unsubscribes
  * itself when the bucket is garbage-collected.
  */
-export function registerBucketForSegmentPositionCache(
-  layerName: string,
-  bucket: DataBucket,
-): void {
+export function registerBucketForSegmentPositionCache(layerName: string, bucket: DataBucket): void {
   if (!bucket.cube.isSegmentation) {
     return;
   }

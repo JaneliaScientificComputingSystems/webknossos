@@ -45,11 +45,6 @@ export type PredictResponsePayload = {
   predictions: SegmentPredictionPayload[];
 };
 
-export type OfflinePredictionsPayload = {
-  dataset_id: string;
-  predictions: SegmentPredictionPayload[];
-};
-
 export type ReferenceDatasetNeuronsPayload = {
   reference_dataset: string;
   neuron_names: string[];
@@ -113,17 +108,4 @@ export async function getReferenceDatasetNeurons(
 /** URL for the service's neuron diagram image (JPEG), suitable for direct use as an <img> src. 404s if no diagram is available for that name. */
 export function getNeuronDiagramUrl(neuronName: string): string {
   return `${getBaseUrl()}/neuron_diagrams/${encodeURIComponent(neuronName)}`;
-}
-
-/** PUT a CSV of externally-computed candidate predictions ("seg"/"neuron"/"score" columns) for parsing; the service does not persist these, it just parses and returns them. */
-export async function uploadOfflinePredictions(
-  datasetId: string,
-  file: File,
-): Promise<OfflinePredictionsPayload> {
-  const formData = new FormData();
-  formData.append("file", file);
-  return fetchJson<OfflinePredictionsPayload>(
-    `/offline_predictions/${encodeURIComponent(datasetId)}`,
-    { method: "PUT", body: formData },
-  );
 }

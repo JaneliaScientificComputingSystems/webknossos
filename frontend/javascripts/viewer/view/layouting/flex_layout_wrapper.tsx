@@ -343,7 +343,7 @@ class FlexLayoutWrapper extends PureComponent<Props, State> {
       case "SegmentsView": {
         return <SegmentsView />;
       }
-      
+
       case "NeuronIdentityView": {
         return <NeuronIdentityView />;
       }

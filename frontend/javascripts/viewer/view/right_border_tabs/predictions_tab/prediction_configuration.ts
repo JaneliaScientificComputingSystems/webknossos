@@ -33,6 +33,7 @@ import {
 import { waitUntilRebaseFinished } from "viewer/model/helpers/bounding_box_creation_helpers";
 import {
   getSegmentIdentity,
+  withConfirmedIdentity,
   withMergedCandidates,
 } from "viewer/view/right_border_tabs/neuron_identity_tab/neuron_identity_metadata";
 import {
@@ -68,7 +69,14 @@ function predictionSourceFor(referenceDataset: string): string {
 // a single batched dispatch regardless of count.
 const MAX_POSITION_LOOKUPS_PER_CLICK = 25;
 
-export type WriteResult = { written: number; createdCount: number; positionedCount: number };
+export type WriteResult = {
+  written: number;
+  createdCount: number;
+  positionedCount: number;
+  /** Only meaningful when writeMergedCandidates was called with autoConfirm. */
+  confirmedCount: number;
+  skippedConfirmCount: number;
+};
 
 export function usePredictionConfigurationState() {
   const dispatch = useDispatch();
@@ -356,9 +364,24 @@ export function usePredictionConfigurationState() {
   const writeMergedCandidates = async (
     source: string,
     predictions: SegmentPredictionPayload[],
+    // Seeds (ground-truth assignments, as opposed to a model's guesses) are
+    // auto-confirmed rather than left for the user to click — but only when
+    // unambiguous: a prediction with more than one candidate name isn't a
+    // seed assignment, and a conflicting confirm (this segment already
+    // confirmed as something else, or this name already confirmed on a
+    // DIFFERENT segment — checked against both pre-existing state and
+    // earlier rows in this same batch) is skipped, leaving the candidate
+    // written but unconfirmed for manual review.
+    options?: { autoConfirm?: boolean },
   ): Promise<WriteResult> => {
     if (visibleSegmentationLayer == null || segments == null) {
-      return { written: 0, createdCount: 0, positionedCount: 0 };
+      return {
+        written: 0,
+        createdCount: 0,
+        positionedCount: 0,
+        confirmedCount: 0,
+        skippedConfirmCount: 0,
+      };
     }
     const newSegmentIds = predictions
       .map((prediction) => BigInt(prediction.segment_id))
@@ -377,9 +400,27 @@ export function usePredictionConfigurationState() {
       // Fall through — segments are created without a position below.
     }
 
+    // Names already confirmed elsewhere, as of before this batch — the
+    // baseline conflict check for auto-confirm. Names claimed by an EARLIER
+    // row within this same batch are tracked separately as the batch is
+    // built below, so two seed rows in the same file can't both claim the
+    // same name either.
+    const confirmedNamesAtStart = new Set<string>();
+    if (options?.autoConfirm) {
+      for (const existingSegment of segments.values()) {
+        const confirmed = getSegmentIdentity(existingSegment).confirmed;
+        if (confirmed != null) {
+          confirmedNamesAtStart.add(confirmed);
+        }
+      }
+    }
+    const namesClaimedThisBatch = new Set<string>();
+
     const predictedAt = Date.now();
     let createdCount = 0;
     let positionedCount = 0;
+    let confirmedCount = 0;
+    let skippedConfirmCount = 0;
     const actions = predictions.map((prediction) => {
       const segmentId = BigInt(prediction.segment_id);
       const segment = segments.getNullable(segmentId);
@@ -390,16 +431,39 @@ export function usePredictionConfigurationState() {
           positionedCount += 1;
         }
       }
+      let metadata = withMergedCandidates(
+        segment?.metadata ?? [],
+        source,
+        prediction.candidates,
+        predictedAt,
+      );
+      let confirmedName: string | null = null;
+      if (options?.autoConfirm && prediction.candidates.length === 1) {
+        const name = prediction.candidates[0].name;
+        const existingConfirmed = segment != null ? getSegmentIdentity(segment).confirmed : null;
+        const conflicts =
+          (existingConfirmed != null && existingConfirmed !== name) ||
+          confirmedNamesAtStart.has(name) ||
+          namesClaimedThisBatch.has(name);
+        if (conflicts) {
+          skippedConfirmCount += 1;
+        } else {
+          namesClaimedThisBatch.add(name);
+          confirmedCount += 1;
+          metadata = withConfirmedIdentity(metadata, name);
+          confirmedName = name;
+        }
+      }
       return updateSegmentAction(
         segmentId,
         {
           ...(anchorPosition != null ? { anchorPosition } : {}),
-          metadata: withMergedCandidates(
-            segment?.metadata ?? [],
-            source,
-            prediction.candidates,
-            predictedAt,
-          ),
+          // Keep WK's native segment.name in sync with the confirmed
+          // identity — handleConfirm (the manual confirm path) already does
+          // this; this auto-confirm path must match or the Segments panel's
+          // name column silently disagrees with the identity status tag.
+          ...(confirmedName != null ? { name: confirmedName } : {}),
+          metadata,
         },
         visibleSegmentationLayer.name,
         undefined,
@@ -419,7 +483,13 @@ export function usePredictionConfigurationState() {
       await waitUntilRebaseFinished();
       dispatch(batchUpdateGroupsAndSegmentsAction(actions));
     }
-    return { written: actions.length, createdCount, positionedCount };
+    return {
+      written: actions.length,
+      createdCount,
+      positionedCount,
+      confirmedCount,
+      skippedConfirmCount,
+    };
   };
 
   const canRun =
@@ -468,10 +538,16 @@ export function usePredictionConfigurationState() {
         if (segment == null) {
           return { id: neuronId, name: null, is_confirmed: false };
         }
+        const identity = getSegmentIdentity(segment);
         return {
           id: Number(segment.id),
-          name: segment.name ?? null,
-          is_confirmed: getSegmentIdentity(segment).confirmed != null,
+          // The CONFIRMED identity name, not WK's native segment.name field
+          // (set independently of this feature's confirmation system) —
+          // using segment.name here sent is_confirmed: true paired with
+          // name: null for every confirmed segment, which the service
+          // rejected (a seed needs both to be set).
+          name: identity.confirmed,
+          is_confirmed: identity.confirmed != null,
         };
       });
       const requestContactEdges = contactEdges
@@ -537,7 +613,6 @@ export function usePredictionConfigurationState() {
 
   return {
     allowUpdate,
-    datasetId: dataset.id,
     ignoredNames,
     setIgnoredNames,
     contactEdges,
