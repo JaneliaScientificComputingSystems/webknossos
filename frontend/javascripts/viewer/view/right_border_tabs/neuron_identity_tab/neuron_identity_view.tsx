@@ -23,7 +23,7 @@ import {
 import { V4 } from "libs/mjs";
 import { useWkSelector } from "libs/react_hooks";
 import Toast from "libs/toast";
-import { type MouseEvent, useMemo, useState } from "react";
+import { type MouseEvent, memo, useCallback, useMemo, useState } from "react";
 import { useDispatch } from "react-redux";
 import type { Vector4 } from "viewer/constants";
 import { mayEditAnnotation } from "viewer/model/accessors/annotation_accessor";
@@ -228,7 +228,7 @@ function NeuronDiagram({ name }: { name: string }) {
   );
 }
 
-function IdentityListItem({
+const IdentityListItem = memo(function IdentityListItem({
   row,
   allowUpdate,
   isActive,
@@ -468,7 +468,7 @@ function IdentityListItem({
       )}
     </div>
   );
-}
+});
 
 /**
  * The reverse lookup of the main Proofreading list: instead of "for this
@@ -477,7 +477,7 @@ function IdentityListItem({
  * cross-source average score for exactly the typed name (segments where
  * that name isn't a candidate at all sort last, via -Infinity).
  */
-function SearchByNameView({
+const SearchByNameView = memo(function SearchByNameView({
   allRows,
   allowUpdate,
   activeCellId,
@@ -768,7 +768,7 @@ function SearchByNameView({
       </div>
     </div>
   );
-}
+});
 
 /**
  * Shows exactly one segment: whichever was most recently clicked, either as
@@ -779,7 +779,7 @@ function SearchByNameView({
  * (shift/ctrl-click in the Segments panel) still resolves to "the first of
  * the selection", rather than showing nothing or all of them.
  */
-function CurrentSegmentView({
+const CurrentSegmentView = memo(function CurrentSegmentView({
   allRows,
   allowUpdate,
   selectedSegmentId,
@@ -876,7 +876,7 @@ function CurrentSegmentView({
       )}
     </div>
   );
-}
+});
 
 export default function NeuronIdentityView() {
   return (
@@ -908,25 +908,11 @@ function NeuronIdentityPanel() {
   // segments.
   const [diagramName, setDiagramName] = useState<string | null>(null);
   const [isDiagramExpanded, setIsDiagramExpanded] = useState(true);
-  const handleSearchName = (name: string) => {
+  const handleSearchName = useCallback((name: string) => {
     setSearchByNameQuery(name);
     setSubTab("searchByName");
     setDiagramName(name);
-  };
-  // Typing directly into Search by Name's box also populates the diagram
-  // section once the query exactly matches a known candidate name (but
-  // doesn't force the section open if the user collapsed it) — showing a
-  // diagram for every in-progress keystroke ("a", "ad", "ada", …) would just
-  // be a flurry of guaranteed-404 requests until the name is fully typed.
-  // Clearing the query (back to "") leaves whatever diagram was last shown in
-  // place, rather than blanking the section.
-  const handleSearchByNameQueryChange = (query: string) => {
-    setSearchByNameQuery(query);
-    const trimmed = query.trim();
-    if (trimmed.length > 0 && allRows.some((row) => row.identity.candidates.some((c) => c.name === trimmed))) {
-      setDiagramName(trimmed);
-    }
-  };
+  }, []);
   // ignoredNames and the rest of the ID-prediction feature's state (contact
   // profile, selected reference datasets, isRunning) live in
   // PredictionConfigurationContext — shared, via that context, with
@@ -1000,7 +986,7 @@ function NeuronIdentityPanel() {
     return Array.from(sources).sort((a, b) => a.localeCompare(b));
   }, [unfilteredRows]);
 
-  const handleToggleSource = (source: string, enabled: boolean) => {
+  const handleToggleSource = useCallback((source: string, enabled: boolean) => {
     setDisabledSources((current) => {
       const next = new Set(current);
       if (enabled) {
@@ -1010,7 +996,7 @@ function NeuronIdentityPanel() {
       }
       return next;
     });
-  };
+  }, []);
 
   // Disabled sources are stripped out of each candidate's scoresBySource
   // (and a candidate left with no remaining source is dropped entirely) here
@@ -1036,6 +1022,27 @@ function NeuronIdentityPanel() {
       return { ...row, identity, status: getIdentityStatus(identity) };
     });
   }, [unfilteredRows, disabledSources]);
+
+  // Typing directly into Search by Name's box also populates the diagram
+  // section once the query exactly matches a known candidate name (but
+  // doesn't force the section open if the user collapsed it) — showing a
+  // diagram for every in-progress keystroke ("a", "ad", "ada", …) would just
+  // be a flurry of guaranteed-404 requests until the name is fully typed.
+  // Clearing the query (back to "") leaves whatever diagram was last shown in
+  // place, rather than blanking the section.
+  const handleSearchByNameQueryChange = useCallback(
+    (query: string) => {
+      setSearchByNameQuery(query);
+      const trimmed = query.trim();
+      if (
+        trimmed.length > 0 &&
+        allRows.some((row) => row.identity.candidates.some((c) => c.name === trimmed))
+      ) {
+        setDiagramName(trimmed);
+      }
+    },
+    [allRows],
+  );
 
   const confirmedCount = useMemo(
     () => allRows.filter((row) => row.status === "confirmed").length,
@@ -1111,170 +1118,194 @@ function NeuronIdentityPanel() {
     return count;
   }, [allRows, ignoredNames]);
 
-  const handleConfirm = (segment: Segment, name: string) => {
-    if (visibleSegmentationLayer == null) {
-      return;
-    }
-    const conflictingRow = allRows.find(
-      (row) => row.segment.id !== segment.id && row.identity.confirmed === name,
-    );
-    if (conflictingRow != null) {
-      Toast.error(
-        `"${name}" is already confirmed on segment #${conflictingRow.segment.id} — clear that confirmation first if you want to reassign it.`,
+  const handleConfirm = useCallback(
+    (segment: Segment, name: string) => {
+      if (visibleSegmentationLayer == null) {
+        return;
+      }
+      const conflictingRow = allRows.find(
+        (row) => row.segment.id !== segment.id && row.identity.confirmed === name,
       );
-      return;
-    }
-    dispatch(
-      updateSegmentAction(
-        segment.id,
-        { name, metadata: withConfirmedIdentity(segment.metadata ?? [], name) },
+      if (conflictingRow != null) {
+        Toast.error(
+          `"${name}" is already confirmed on segment #${conflictingRow.segment.id} — clear that confirmation first if you want to reassign it.`,
+        );
+        return;
+      }
+      dispatch(
+        updateSegmentAction(
+          segment.id,
+          { name, metadata: withConfirmedIdentity(segment.metadata ?? [], name) },
+          visibleSegmentationLayer.name,
+          undefined,
+          true,
+        ),
+      );
+    },
+    [visibleSegmentationLayer, allRows, dispatch],
+  );
+
+  const handleGoTo = useCallback(
+    (segment: Segment) => {
+      if (visibleSegmentationLayer == null) {
+        return;
+      }
+      dispatch(setSelectedSegmentsOrGroupAction([segment.id], null, visibleSegmentationLayer.name));
+      if (!segment.anchorPosition) {
+        Toast.info("Cannot go to this segment, because its position is unknown.");
+        return;
+      }
+      const transformedPosition = layerToGlobalTransformedPosition(
+        segment.anchorPosition,
         visibleSegmentationLayer.name,
-        undefined,
-        true,
-      ),
-    );
-  };
+        "segmentation",
+        Store.getState(),
+      );
+      dispatch(setPositionAction(transformedPosition));
+      if (segment.additionalCoordinates != null) {
+        dispatch(setAdditionalCoordinatesAction(segment.additionalCoordinates));
+      }
+    },
+    [visibleSegmentationLayer, dispatch],
+  );
 
-  const handleGoTo = (segment: Segment) => {
-    if (visibleSegmentationLayer == null) {
-      return;
-    }
-    dispatch(setSelectedSegmentsOrGroupAction([segment.id], null, visibleSegmentationLayer.name));
-    if (!segment.anchorPosition) {
-      Toast.info("Cannot go to this segment, because its position is unknown.");
-      return;
-    }
-    const transformedPosition = layerToGlobalTransformedPosition(
-      segment.anchorPosition,
-      visibleSegmentationLayer.name,
-      "segmentation",
-      Store.getState(),
-    );
-    dispatch(setPositionAction(transformedPosition));
-    if (segment.additionalCoordinates != null) {
-      dispatch(setAdditionalCoordinatesAction(segment.additionalCoordinates));
-    }
-  };
+  const handleResetDecision = useCallback(
+    (segment: Segment) => {
+      if (visibleSegmentationLayer == null) {
+        return;
+      }
+      dispatch(
+        updateSegmentAction(
+          segment.id,
+          { metadata: withUnconfirmedIdentity(segment.metadata ?? []) },
+          visibleSegmentationLayer.name,
+          undefined,
+          true,
+        ),
+      );
+    },
+    [visibleSegmentationLayer, dispatch],
+  );
 
-  const handleResetDecision = (segment: Segment) => {
-    if (visibleSegmentationLayer == null) {
-      return;
-    }
-    dispatch(
-      updateSegmentAction(
-        segment.id,
-        { metadata: withUnconfirmedIdentity(segment.metadata ?? []) },
-        visibleSegmentationLayer.name,
-        undefined,
-        true,
-      ),
-    );
-  };
+  const handleToggleIgnored = useCallback(
+    (segment: Segment, ignored: boolean) => {
+      if (visibleSegmentationLayer == null) {
+        return;
+      }
+      dispatch(
+        updateSegmentAction(
+          segment.id,
+          {
+            metadata: (ignored ? withIgnored : withUnignored)(segment.metadata ?? []),
+          },
+          visibleSegmentationLayer.name,
+          undefined,
+          true,
+        ),
+      );
+    },
+    [visibleSegmentationLayer, dispatch],
+  );
 
-  const handleToggleIgnored = (segment: Segment, ignored: boolean) => {
-    if (visibleSegmentationLayer == null) {
-      return;
-    }
-    dispatch(
-      updateSegmentAction(
-        segment.id,
-        {
-          metadata: (ignored ? withIgnored : withUnignored)(segment.metadata ?? []),
-        },
-        visibleSegmentationLayer.name,
-        undefined,
-        true,
-      ),
-    );
-  };
-
-  const hideContextMenu = () => {
+  const hideContextMenu = useCallback(() => {
     setContextMenuPosition(null);
     setContextMenu(null);
-  };
+  }, []);
 
-  const showContextMenuAt = (xPos: number, yPos: number, menu: MenuProps) => {
+  const showContextMenuAt = useCallback((xPos: number, yPos: number, menu: MenuProps) => {
     // Delay the state update by a tick so the same right-click that opens the menu
     // isn't also delivered to the freshly-rendered overlay (which would close it).
     setTimeout(() => {
       setContextMenuPosition([xPos, yPos]);
       setContextMenu(menu);
     }, 0);
-  };
+  }, []);
 
   // Row right-click (outside a candidate tag): the ignore toggle and manual
   // name assignment — goto is now the row's plain click, and confirm/color/
   // remove moved to the tag-level interactions below (or were dropped).
-  const buildRowContextMenu = (row: IdentityRow): MenuProps => {
-    const { segment, identity } = row;
-    const withHide = (fn: () => void) => () => {
-      hideContextMenu();
-      fn();
-    };
-    return {
-      items: [
-        {
-          key: "assignName",
-          label: "Assign name…",
-          disabled: !allowUpdate,
-          onClick: withHide(() => {
-            setAssigningSegment(segment);
-            setAssignNameInput(identity.confirmed ?? "");
-          }),
-        },
-        {
-          key: "toggleIgnored",
-          label: identity.ignored ? "Un-ignore segment" : "Ignore segment (not a neuron)",
-          disabled: !allowUpdate,
-          onClick: withHide(() => handleToggleIgnored(segment, !identity.ignored)),
-        },
-      ],
-    };
-  };
+  const buildRowContextMenu = useCallback(
+    (row: IdentityRow): MenuProps => {
+      const { segment, identity } = row;
+      const withHide = (fn: () => void) => () => {
+        hideContextMenu();
+        fn();
+      };
+      return {
+        items: [
+          {
+            key: "assignName",
+            label: "Assign name…",
+            disabled: !allowUpdate,
+            onClick: withHide(() => {
+              setAssigningSegment(segment);
+              setAssignNameInput(identity.confirmed ?? "");
+            }),
+          },
+          {
+            key: "toggleIgnored",
+            label: identity.ignored ? "Un-ignore segment" : "Ignore segment (not a neuron)",
+            disabled: !allowUpdate,
+            onClick: withHide(() => handleToggleIgnored(segment, !identity.ignored)),
+          },
+        ],
+      };
+    },
+    [allowUpdate, handleToggleIgnored, hideContextMenu],
+  );
 
   // Candidate-tag right-click: search for the name elsewhere, or exclude it
   // from matching entirely (confirm/unconfirm is the tag's plain click).
-  const buildTagContextMenu = (name: string): MenuProps => {
-    const withHide = (fn: () => void) => () => {
-      hideContextMenu();
-      fn();
-    };
-    return {
-      items: [
-        {
-          key: "viewDiagram",
-          label: "View diagram",
-          onClick: withHide(() => setDiagramName(name)),
-        },
-        {
-          key: "searchByName",
-          label: "Search by name",
-          onClick: withHide(() => handleSearchName(name)),
-        },
-        {
-          key: "excludeName",
-          label: "Exclude name",
-          disabled: !allowUpdate || ignoredNames.includes(name),
-          onClick: withHide(() => {
-            if (!ignoredNames.includes(name)) {
-              setIgnoredNames([...ignoredNames, name]);
-            }
-          }),
-        },
-      ],
-    };
-  };
+  const buildTagContextMenu = useCallback(
+    (name: string): MenuProps => {
+      const withHide = (fn: () => void) => () => {
+        hideContextMenu();
+        fn();
+      };
+      return {
+        items: [
+          {
+            key: "viewDiagram",
+            label: "View diagram",
+            onClick: withHide(() => setDiagramName(name)),
+          },
+          {
+            key: "searchByName",
+            label: "Search by name",
+            onClick: withHide(() => handleSearchName(name)),
+          },
+          {
+            key: "excludeName",
+            label: "Exclude name",
+            disabled: !allowUpdate || ignoredNames.includes(name),
+            onClick: withHide(() => {
+              if (!ignoredNames.includes(name)) {
+                setIgnoredNames([...ignoredNames, name]);
+              }
+            }),
+          },
+        ],
+      };
+    },
+    [allowUpdate, ignoredNames, setIgnoredNames, hideContextMenu],
+  );
 
-  const onRowContextMenu = (event: MouseEvent<HTMLDivElement>, row: IdentityRow) => {
-    event.preventDefault();
-    const [x, y] = getContextMenuPositionFromEvent(event, CONTEXT_MENU_OVERLAY_CLASS);
-    showContextMenuAt(x, y, buildRowContextMenu(row));
-  };
+  const onRowContextMenu = useCallback(
+    (event: MouseEvent<HTMLDivElement>, row: IdentityRow) => {
+      event.preventDefault();
+      const [x, y] = getContextMenuPositionFromEvent(event, CONTEXT_MENU_OVERLAY_CLASS);
+      showContextMenuAt(x, y, buildRowContextMenu(row));
+    },
+    [showContextMenuAt, buildRowContextMenu],
+  );
 
-  const onTagContextMenu = (event: MouseEvent<HTMLElement>, _row: IdentityRow, name: string) => {
-    const [x, y] = getContextMenuPositionFromEvent(event, CONTEXT_MENU_OVERLAY_CLASS);
-    showContextMenuAt(x, y, buildTagContextMenu(name));
-  };
+  const onTagContextMenu = useCallback(
+    (event: MouseEvent<HTMLElement>, _row: IdentityRow, name: string) => {
+      const [x, y] = getContextMenuPositionFromEvent(event, CONTEXT_MENU_OVERLAY_CLASS);
+      showContextMenuAt(x, y, buildTagContextMenu(name));
+    },
+    [showContextMenuAt, buildTagContextMenu],
+  );
 
   if (visibleSegmentationLayer == null) {
     return (
