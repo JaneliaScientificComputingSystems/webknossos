@@ -292,6 +292,9 @@ export function usePredictionConfigurationState() {
       setLastRunConfirmedNames(
         persisted.lastRunConfirmedNames != null ? new Set(persisted.lastRunConfirmedNames) : null,
       );
+      if (persisted.selectedReferenceDatasets.length > 0) {
+        setSelectedReferenceDatasets(new Set(persisted.selectedReferenceDatasets));
+      }
     }
     hasLoadedPersistedConfig.current = true;
     // Intentionally run once on mount only (new annotation.description
@@ -311,6 +314,7 @@ export function usePredictionConfigurationState() {
       ignoredNames,
       lastRunConfirmedNames:
         lastRunConfirmedNames != null ? Array.from(lastRunConfirmedNames) : null,
+      selectedReferenceDatasets: Array.from(selectedReferenceDatasets),
     });
     if (nextDescription !== annotation.description) {
       dispatch(setAnnotationDescriptionAction(nextDescription));
@@ -326,6 +330,7 @@ export function usePredictionConfigurationState() {
     contactUploadedAt,
     ignoredNames,
     lastRunConfirmedNames,
+    selectedReferenceDatasets,
     dispatch,
   ]);
 
@@ -485,7 +490,6 @@ export function usePredictionConfigurationState() {
       // not-yet-dispatched write.
       let totalWritten = 0;
       let totalCreated = 0;
-      let totalPositioned = 0;
       const failedDatasets: string[] = [];
       for (const referenceDataset of selectedReferenceDatasets) {
         const payload: PredictRequestPayload = {
@@ -510,20 +514,20 @@ export function usePredictionConfigurationState() {
           continue;
         }
 
-        const { written, createdCount, positionedCount } = await writeMergedCandidates(
+        const { written, createdCount } = await writeMergedCandidates(
           predictionSourceFor(referenceDataset),
           response.predictions,
         );
         totalWritten += written;
         totalCreated += createdCount;
-        totalPositioned += positionedCount;
       }
 
       if (totalWritten > 0) {
+        const datasetCount = selectedReferenceDatasets.size - failedDatasets.length;
         Toast.success(
-          totalCreated > 0
-            ? `Wrote predictions to ${totalWritten} segment(s) across ${selectedReferenceDatasets.size - failedDatasets.length} dataset(s) (${totalCreated} newly added to the segment list, ${totalPositioned} with a known position). Proofread them in the Identities tab.`
-            : `Wrote predictions to ${totalWritten} segment(s) across ${selectedReferenceDatasets.size - failedDatasets.length} dataset(s). Proofread them in the Identities tab.`,
+          `Predicted identities for ${totalWritten} segment(s) against ${datasetCount} dataset(s)${
+            totalCreated > 0 ? ` (${totalCreated} new segment(s) added)` : ""
+          }.`,
         );
       }
     } finally {
