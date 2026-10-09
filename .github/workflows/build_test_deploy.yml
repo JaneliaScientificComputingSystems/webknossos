@@ -44,6 +44,7 @@ jobs:
       - name:
           Download Coverage Artifacts
           # Can not use actions/download-artifact@v4 because it does not support downloading artifacts from other GA runs
+        if: github.repository == 'scalableminds/webknossos'
         run: |
           gh_last_success_run_id=$(gh run list --workflow "CI Pipeline" --json conclusion,headBranch,databaseId --branch master --jq 'first(.[] | select(.conclusion | contains("success"))) | .databaseId')
           [ -z "$gh_last_success_run_id" ] && echo "No successful run found" && exit 1 || true
@@ -53,6 +54,7 @@ jobs:
           ARTIFACT_NAME: vitest-coverage-master
           OUTPUT_DIR: coverage-master
       - name: "Report Coverage"
+        if: github.repository == 'scalableminds/webknossos'
         uses: davelosert/vitest-coverage-report-action@v2
         with:
           comment-on: none # alternative: pr
