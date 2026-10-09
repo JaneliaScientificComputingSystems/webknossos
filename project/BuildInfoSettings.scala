@@ -23,7 +23,9 @@ object BuildInfoSettings {
 
   def webknossosVersion: String = if (ciTag != "") ciTag else (if (ciBuild != "") ciBuild else "dev")
 
-  val certificatePublicKey: Option[String] = Properties.envOrNone("CERTIFICATE_PUBLIC_KEY")
+  // An empty value (e.g. a CI secret that is not available) means "no key", not an invalid key that
+  // would force the default feature overrides (OIDC and editable mappings off).
+  val certificatePublicKey: Option[String] = Properties.envOrNone("CERTIFICATE_PUBLIC_KEY").filter(_.nonEmpty)
 
   lazy val webknossosBuildInfoSettings = Seq(
     buildInfoKeys := Seq[BuildInfoKey](
