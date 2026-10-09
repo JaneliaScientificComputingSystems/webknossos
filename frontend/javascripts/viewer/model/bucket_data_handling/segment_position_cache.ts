@@ -43,6 +43,23 @@ import { listenToStoreProperty } from "viewer/model/helpers/listener_helpers";
 import Store from "viewer/store";
 import type { DataBucket } from "./bucket";
 
+// Scans every loaded bucket's full value set for distinct segment IDs, which
+// can be expensive on datasets with very large/densely-packed segmentations.
+// Off by default for that reason — a user with a small dataset (like this
+// fork's intended use case) can opt in via the ID-prediction configuration
+// tab. Persisted per-annotation alongside this feature's other config (see
+// prediction_config_persistence.ts), not here — this module only holds the
+// live in-memory flag that actually gates bucket scanning.
+let isEnabled = false;
+
+export function isSegmentPositionCacheEnabled(): boolean {
+  return isEnabled;
+}
+
+export function setSegmentPositionCacheEnabled(enabled: boolean): void {
+  isEnabled = enabled;
+}
+
 const positionsByLayerName = new Map<string, Map<bigint, Vector3>>();
 // Segment IDs already checked against the cache by the store-subscription
 // path, per layer — so re-renders that don't add new segments don't rescan
@@ -227,7 +244,7 @@ function watchSegmentListForLayer(layerName: string): void {
  * itself when the bucket is garbage-collected.
  */
 export function registerBucketForSegmentPositionCache(layerName: string, bucket: DataBucket): void {
-  if (!bucket.cube.isSegmentation) {
+  if (!bucket.cube.isSegmentation || !isEnabled) {
     return;
   }
   watchSegmentListForLayer(layerName);

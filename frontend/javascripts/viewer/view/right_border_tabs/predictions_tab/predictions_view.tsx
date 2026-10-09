@@ -28,6 +28,8 @@ export default function PredictionsView() {
     selectedReferenceDatasets,
     toggleReferenceDataset,
     writeMergedCandidates,
+    segmentPositionCacheEnabled,
+    toggleSegmentPositionCache,
   } = usePredictionConfiguration();
 
   const [newIgnoredName, setNewIgnoredName] = useState("");
@@ -172,6 +174,21 @@ export default function PredictionsView() {
           ))}
         </div>
       )}
+
+      <Divider style={{ margin: "12px 0" }} />
+
+      <Checkbox
+        checked={segmentPositionCacheEnabled}
+        onChange={(event) => toggleSegmentPositionCache(event.target.checked)}
+      >
+        Cache segment positions while browsing
+      </Checkbox>
+      <Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
+        Speeds up filling in positions for newly predicted segments by remembering where segments
+        were seen while scrolling. Off by default — scans every loaded bucket, which can be
+        expensive on large/densely-packed datasets. Only applies to buckets loaded after this is
+        turned on — reload the page if you don't see it taking effect.
+      </Text>
 
       <Text strong style={{ display: "block", marginBottom: 4 }}>
         Ignored names

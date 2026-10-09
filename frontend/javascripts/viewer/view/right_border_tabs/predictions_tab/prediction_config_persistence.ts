@@ -23,6 +23,8 @@ export type PersistedPredictionConfig = {
   lastRunConfirmedNames: string[] | null;
   /** Reference datasets checked in the Configuration tab. Serialized as an array (JSON has no Set type); callers convert to/from Set at the boundary. */
   selectedReferenceDatasets: string[];
+  /** Whether segment_position_cache.ts scans loaded buckets for this annotation. Off by default; scoped per-annotation (not per-browser) like the rest of this config, since it only pays off / costs anything for the dataset this annotation belongs to. */
+  segmentPositionCacheEnabled: boolean;
 };
 
 /** Strips the fenced config block (if any) from a saved description, returning just the human-written part. */
@@ -69,6 +71,7 @@ export function parseConfigFromDescription(description: string): PersistedPredic
             (name: unknown): name is string => typeof name === "string",
           )
         : [],
+      segmentPositionCacheEnabled: parsed.segmentPositionCacheEnabled === true,
     };
   } catch (_exception) {
     return null;

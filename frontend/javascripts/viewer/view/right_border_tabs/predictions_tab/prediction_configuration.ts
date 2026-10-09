@@ -18,6 +18,7 @@ import { useDispatch } from "react-redux";
 import type { Vector3 } from "viewer/constants";
 import { mayEditAnnotation } from "viewer/model/accessors/annotation_accessor";
 import { getMagInfo, getVisibleSegmentationLayer } from "viewer/model/accessors/dataset_accessor";
+import { setSegmentPositionCacheEnabled } from "viewer/model/bucket_data_handling/segment_position_cache";
 import {
   getCurrentMappingName,
   getVisibleSegments,
@@ -113,6 +114,17 @@ export function usePredictionConfigurationState() {
   // last Run" to show how much has changed since predictions were last
   // generated, without this hook needing to know anything about rendering.
   const [lastRunConfirmedNames, setLastRunConfirmedNames] = useState<Set<string> | null>(null);
+
+  // Per-annotation (not per-browser) opt-in for segment_position_cache.ts —
+  // see that module for why it's expensive and off by default. Persisted
+  // alongside this feature's other config in annotation.description (below),
+  // same as contactEdges/ignoredNames/etc; segment_position_cache.ts itself
+  // only holds the live in-memory flag this state is kept in sync with.
+  const [segmentPositionCacheEnabled, setSegmentPositionCacheEnabledState] = useState(false);
+  const toggleSegmentPositionCache = (enabled: boolean) => {
+    setSegmentPositionCacheEnabled(enabled);
+    setSegmentPositionCacheEnabledState(enabled);
+  };
 
   // Populate the reference-dataset checkboxes from the service itself, rather
   // than hardcoding the list here — it's the service (not the frontend) that
@@ -303,6 +315,8 @@ export function usePredictionConfigurationState() {
       if (persisted.selectedReferenceDatasets.length > 0) {
         setSelectedReferenceDatasets(new Set(persisted.selectedReferenceDatasets));
       }
+      setSegmentPositionCacheEnabled(persisted.segmentPositionCacheEnabled);
+      setSegmentPositionCacheEnabledState(persisted.segmentPositionCacheEnabled);
     }
     hasLoadedPersistedConfig.current = true;
     // Intentionally run once on mount only (new annotation.description
@@ -323,6 +337,7 @@ export function usePredictionConfigurationState() {
       lastRunConfirmedNames:
         lastRunConfirmedNames != null ? Array.from(lastRunConfirmedNames) : null,
       selectedReferenceDatasets: Array.from(selectedReferenceDatasets),
+      segmentPositionCacheEnabled,
     });
     if (nextDescription !== annotation.description) {
       dispatch(setAnnotationDescriptionAction(nextDescription));
@@ -339,6 +354,7 @@ export function usePredictionConfigurationState() {
     ignoredNames,
     lastRunConfirmedNames,
     selectedReferenceDatasets,
+    segmentPositionCacheEnabled,
     dispatch,
   ]);
 
@@ -629,6 +645,8 @@ export function usePredictionConfigurationState() {
     run,
     writeMergedCandidates,
     lastRunConfirmedNames,
+    segmentPositionCacheEnabled,
+    toggleSegmentPositionCache,
   };
 }
 

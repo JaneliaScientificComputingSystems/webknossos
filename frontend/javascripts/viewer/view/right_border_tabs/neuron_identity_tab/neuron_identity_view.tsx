@@ -1152,7 +1152,9 @@ function NeuronIdentityPanel() {
       }
       dispatch(setSelectedSegmentsOrGroupAction([segment.id], null, visibleSegmentationLayer.name));
       if (!segment.anchorPosition) {
-        Toast.info("Cannot go to this segment, because its position is unknown.");
+        Toast.info(
+          "Cannot go to this segment, because its position is unknown. Check the cache button in Configuration and reload the window to get locations for all segments in the view.",
+        );
         return;
       }
       const transformedPosition = layerToGlobalTransformedPosition(
