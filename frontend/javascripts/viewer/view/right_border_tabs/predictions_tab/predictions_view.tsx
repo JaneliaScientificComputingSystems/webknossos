@@ -1,6 +1,6 @@
 import { DeleteOutlined, UploadOutlined } from "@ant-design/icons";
 import { Button, Checkbox, Divider, Input, Tag, Tooltip, Typography, Upload } from "antd";
-import type { UploadChangeParam, UploadFile } from "antd/lib/upload";
+import type { UploadChangeParam, UploadFile } from "antd/es/upload";
 import { readFileAsText } from "libs/read_file";
 import Toast from "libs/toast";
 import { useState } from "react";

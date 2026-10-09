@@ -18,7 +18,6 @@ import { useDispatch } from "react-redux";
 import type { Vector3 } from "viewer/constants";
 import { mayEditAnnotation } from "viewer/model/accessors/annotation_accessor";
 import { getMagInfo, getVisibleSegmentationLayer } from "viewer/model/accessors/dataset_accessor";
-import { setSegmentPositionCacheEnabled } from "viewer/model/bucket_data_handling/segment_position_cache";
 import {
   getCurrentMappingName,
   getVisibleSegments,
@@ -31,6 +30,7 @@ import {
   batchUpdateGroupsAndSegmentsAction,
   updateSegmentAction,
 } from "viewer/model/actions/volumetracing_actions";
+import { setSegmentPositionCacheEnabled } from "viewer/model/bucket_data_handling/segment_position_cache";
 import { waitUntilRebaseFinished } from "viewer/model/helpers/bounding_box_creation_helpers";
 import {
   getSegmentIdentity,
