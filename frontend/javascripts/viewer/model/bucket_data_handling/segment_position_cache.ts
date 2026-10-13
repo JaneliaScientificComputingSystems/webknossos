@@ -52,20 +52,41 @@ import type { DataBucket } from "./bucket";
 // live in-memory flag that actually gates bucket scanning.
 let isEnabled = false;
 
-export function isSegmentPositionCacheEnabled(): boolean {
-  return isEnabled;
-}
-
-export function setSegmentPositionCacheEnabled(enabled: boolean): void {
-  isEnabled = enabled;
-}
-
 const positionsByLayerName = new Map<string, Map<bigint, Vector3>>();
 // Segment IDs already checked against the cache by the store-subscription
 // path, per layer — so re-renders that don't add new segments don't rescan
 // the whole map every time.
 const checkedSegmentIdsByLayerName = new Map<string, Set<bigint>>();
 const watchedLayerNames = new Set<string>();
+
+// This module's state outlives an annotation: opening another one doesn't
+// reload the page. Both the opt-in and the cached positions belong to the
+// annotation they were made for — positions are keyed by layer name, which
+// different datasets share (e.g. "segmentation") — so drop them as soon as a
+// different annotation is current.
+let stateAnnotationId: string | null = null;
+
+function syncWithCurrentAnnotation(): void {
+  const { annotationId } = Store.getState().annotation;
+  if (annotationId === stateAnnotationId) {
+    return;
+  }
+  stateAnnotationId = annotationId;
+  isEnabled = false;
+  positionsByLayerName.clear();
+  checkedSegmentIdsByLayerName.clear();
+}
+
+export function isSegmentPositionCacheEnabled(): boolean {
+  syncWithCurrentAnnotation();
+  return isEnabled;
+}
+
+/** Applies to the current annotation only; reset when another annotation is opened. */
+export function setSegmentPositionCacheEnabled(enabled: boolean): void {
+  syncWithCurrentAnnotation();
+  isEnabled = enabled;
+}
 
 function getOrCreateLayerCache(layerName: string): Map<bigint, Vector3> {
   let cache = positionsByLayerName.get(layerName);
@@ -100,6 +121,11 @@ function localIndexToGlobalPosition(bucket: DataBucket, linearIndex: number): Ve
 
 /** Record one real voxel position per not-yet-seen segment ID in this bucket, keyed by this layer. */
 function recordBucket(layerName: string, bucket: DataBucket): void {
+  // Buckets registered while enabled keep their listener, so check again:
+  // turning the cache off must stop all writes without a reload.
+  if (!isSegmentPositionCacheEnabled()) {
+    return;
+  }
   const cache = getOrCreateLayerCache(layerName);
   const valueSet = bucket.getValueSet();
   if (valueSet.size === 0) {
@@ -183,6 +209,11 @@ function backfillExistingSegmentPositions(
  * listed at the moment their bucket loads, which misses this ordering.
  */
 function checkSegmentListAgainstCache(layerName: string): void {
+  // The segment-list subscription stays registered once created; only write
+  // while the cache is enabled for the current annotation.
+  if (!isSegmentPositionCacheEnabled()) {
+    return;
+  }
   const cache = positionsByLayerName.get(layerName);
   if (cache == null || cache.size === 0) {
     return;
@@ -244,7 +275,7 @@ function watchSegmentListForLayer(layerName: string): void {
  * itself when the bucket is garbage-collected.
  */
 export function registerBucketForSegmentPositionCache(layerName: string, bucket: DataBucket): void {
-  if (!bucket.cube.isSegmentation || !isEnabled) {
+  if (!bucket.cube.isSegmentation || !isSegmentPositionCacheEnabled()) {
     return;
   }
   watchSegmentListForLayer(layerName);
@@ -257,5 +288,7 @@ export function getCachedSegmentPosition(
   layerName: string,
   segmentId: bigint,
 ): Vector3 | undefined {
+  // Never hand out positions cached for a previously opened annotation.
+  syncWithCurrentAnnotation();
   return positionsByLayerName.get(layerName)?.get(segmentId);
 }

@@ -315,9 +315,12 @@ export function usePredictionConfigurationState() {
       if (persisted.selectedReferenceDatasets.length > 0) {
         setSelectedReferenceDatasets(new Set(persisted.selectedReferenceDatasets));
       }
-      setSegmentPositionCacheEnabled(persisted.segmentPositionCacheEnabled);
-      setSegmentPositionCacheEnabledState(persisted.segmentPositionCacheEnabled);
     }
+    // Set the cache flag on every load, also when this annotation has no saved
+    // config — it must never inherit the setting of a previously opened one.
+    const isCacheEnabled = persisted?.segmentPositionCacheEnabled ?? false;
+    setSegmentPositionCacheEnabled(isCacheEnabled);
+    setSegmentPositionCacheEnabledState(isCacheEnabled);
     hasLoadedPersistedConfig.current = true;
     // Intentionally run once on mount only (new annotation.description
     // values written by THIS hook's own save effect below must not re-trigger

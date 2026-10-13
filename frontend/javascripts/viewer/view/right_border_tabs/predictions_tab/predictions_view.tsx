@@ -186,8 +186,9 @@ export default function PredictionsView() {
       <Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
         Speeds up filling in positions for newly predicted segments by remembering where segments
         were seen while scrolling. Off by default — scans every loaded bucket, which can be
-        expensive on large/densely-packed datasets. Only applies to buckets loaded after this is
-        turned on — reload the page if you don't see it taking effect.
+        expensive on large/densely-packed datasets. Turning it on only applies to data loaded
+        afterwards — reload the page if you don't see it taking effect. Turning it off takes effect
+        immediately. The setting is saved with this annotation only.
       </Text>
 
       <Text strong style={{ display: "block", marginBottom: 4 }}>
