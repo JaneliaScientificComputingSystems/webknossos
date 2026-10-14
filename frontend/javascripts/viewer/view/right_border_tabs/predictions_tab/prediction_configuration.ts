@@ -26,12 +26,14 @@ import {
   dispatchMaybeFetchMeshFilesAsync,
   setAnnotationDescriptionAction,
 } from "viewer/model/actions/annotation_actions";
+import { saveNowAction } from "viewer/model/actions/save_actions";
 import {
   batchUpdateGroupsAndSegmentsAction,
   updateSegmentAction,
 } from "viewer/model/actions/volumetracing_actions";
 import { setSegmentPositionCacheEnabled } from "viewer/model/bucket_data_handling/segment_position_cache";
 import { waitUntilRebaseFinished } from "viewer/model/helpers/bounding_box_creation_helpers";
+import Store from "viewer/store";
 import {
   getSegmentIdentity,
   withConfirmedIdentity,
@@ -297,11 +299,17 @@ export function usePredictionConfigurationState() {
   const [contactFileName, setContactFileName] = useState<string | null>(null);
   const [contactUploadedAt, setContactUploadedAt] = useState<number | null>(null);
 
-  // Guards the save effect below from firing on the very first render (before
-  // the one-time load effect has had a chance to populate state from
-  // annotation.description) — without this, mount would immediately "save"
-  // the still-empty initial state right over whatever was persisted.
-  const hasLoadedPersistedConfig = useRef(false);
+  // Guards the save effect below until the render in which the state restored
+  // by the one-time load effect is visible. A ref would already be true when
+  // the save effect runs right after the load effect on mount, so mount would
+  // "save" the still-empty initial state over whatever was persisted.
+  const [hasLoadedPersistedConfig, setHasLoadedPersistedConfig] = useState(false);
+  // The cache opt-in as last written to the description; toggling it is
+  // usually followed by a reload (see the checkbox's help text), so that
+  // change is saved right away instead of waiting for the autosave interval.
+  const writtenSegmentPositionCacheEnabled = useRef(false);
+  // Only the newest pending write may land (see waitUntilRebaseFinished below).
+  const latestConfigWriteId = useRef(0);
   useEffect(() => {
     const persisted = parseConfigFromDescription(annotation.description);
     if (persisted != null) {
@@ -321,7 +329,8 @@ export function usePredictionConfigurationState() {
     const isCacheEnabled = persisted?.segmentPositionCacheEnabled ?? false;
     setSegmentPositionCacheEnabled(isCacheEnabled);
     setSegmentPositionCacheEnabledState(isCacheEnabled);
-    hasLoadedPersistedConfig.current = true;
+    writtenSegmentPositionCacheEnabled.current = isCacheEnabled;
+    setHasLoadedPersistedConfig(true);
     // Intentionally run once on mount only (new annotation.description
     // values written by THIS hook's own save effect below must not re-trigger
     // a reload, or every save would immediately read itself back).
@@ -329,10 +338,10 @@ export function usePredictionConfigurationState() {
   }, []);
 
   useEffect(() => {
-    if (!hasLoadedPersistedConfig.current) {
+    if (!hasLoadedPersistedConfig) {
       return;
     }
-    const nextDescription = encodeConfigIntoDescription(annotation.description, {
+    const config = {
       contactEdges,
       contactFileName,
       contactUploadedAt,
@@ -341,16 +350,32 @@ export function usePredictionConfigurationState() {
         lastRunConfirmedNames != null ? Array.from(lastRunConfirmedNames) : null,
       selectedReferenceDatasets: Array.from(selectedReferenceDatasets),
       segmentPositionCacheEnabled,
-    });
-    if (nextDescription !== annotation.description) {
+    };
+    latestConfigWriteId.current += 1;
+    const configWriteId = latestConfigWriteId.current;
+    // A description change made while a rebase/forwarding round is running
+    // isn't saved and gets replaced by the server's version (same as the Info
+    // tab's description edit), so wait for it to finish first.
+    waitUntilRebaseFinished().then(() => {
+      if (configWriteId !== latestConfigWriteId.current) {
+        return;
+      }
+      const currentDescription = Store.getState().annotation.description;
+      const nextDescription = encodeConfigIntoDescription(currentDescription, config);
+      if (nextDescription === currentDescription) {
+        return;
+      }
       dispatch(setAnnotationDescriptionAction(nextDescription));
-    }
-    // annotation.description is deliberately excluded from the dependency
-    // list: it's both read and written here, and including it would re-run
-    // this effect (and compare against its own just-written value) on every
+      if (segmentPositionCacheEnabled !== writtenSegmentPositionCacheEnabled.current) {
+        writtenSegmentPositionCacheEnabled.current = segmentPositionCacheEnabled;
+        dispatch(saveNowAction());
+      }
+    });
+    // annotation.description is deliberately not a dependency (it's read from
+    // the store at write time): including it would re-run this effect on every
     // description change from ANYWHERE, not just from this hook's own state.
-    // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   }, [
+    hasLoadedPersistedConfig,
     contactEdges,
     contactFileName,
     contactUploadedAt,
