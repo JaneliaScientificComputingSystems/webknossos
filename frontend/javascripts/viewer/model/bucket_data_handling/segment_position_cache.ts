@@ -59,11 +59,18 @@ const positionsByLayerName = new Map<string, Map<bigint, Vector3>>();
 const checkedSegmentIdsByLayerName = new Map<string, Set<bigint>>();
 const watchedLayerNames = new Set<string>();
 
-// This module's state outlives an annotation: opening another one doesn't
-// reload the page. Both the opt-in and the cached positions belong to the
-// annotation they were made for — positions are keyed by layer name, which
+// This module's cached positions outlive an annotation: opening another one
+// doesn't reload the page. Positions are keyed by layer name, which
 // different datasets share (e.g. "segmentation") — so drop them as soon as a
-// different annotation is current.
+// different annotation is current, or a position harvested from one
+// annotation's bucket data could get written onto a same-named layer/same-id
+// segment in another annotation it was never actually seen in.
+// isEnabled is NOT reset here: prediction_configuration.ts's load effect
+// already sets it from the (per-annotation, persisted) config on every
+// mount — which fires on both a page refresh AND an in-app switch to a
+// different annotation — so re-deriving it here too would be redundant, and
+// previously caused a page-load-vs-real-switch ambiguity that reset the
+// flag to false on every refresh, not just on genuine annotation switches.
 let stateAnnotationId: string | null = null;
 
 function syncWithCurrentAnnotation(): void {
@@ -72,19 +79,16 @@ function syncWithCurrentAnnotation(): void {
     return;
   }
   stateAnnotationId = annotationId;
-  isEnabled = false;
   positionsByLayerName.clear();
   checkedSegmentIdsByLayerName.clear();
 }
 
 export function isSegmentPositionCacheEnabled(): boolean {
-  syncWithCurrentAnnotation();
   return isEnabled;
 }
 
-/** Applies to the current annotation only; reset when another annotation is opened. */
+/** Applies to the current annotation only; prediction_configuration.ts re-sets this from the (per-annotation) persisted config on every mount, so it never carries over to a different annotation. */
 export function setSegmentPositionCacheEnabled(enabled: boolean): void {
-  syncWithCurrentAnnotation();
   isEnabled = enabled;
 }
 
@@ -126,6 +130,7 @@ function recordBucket(layerName: string, bucket: DataBucket): void {
   if (!isSegmentPositionCacheEnabled()) {
     return;
   }
+  syncWithCurrentAnnotation();
   const cache = getOrCreateLayerCache(layerName);
   const valueSet = bucket.getValueSet();
   if (valueSet.size === 0) {
@@ -214,6 +219,7 @@ function checkSegmentListAgainstCache(layerName: string): void {
   if (!isSegmentPositionCacheEnabled()) {
     return;
   }
+  syncWithCurrentAnnotation();
   const cache = positionsByLayerName.get(layerName);
   if (cache == null || cache.size === 0) {
     return;
