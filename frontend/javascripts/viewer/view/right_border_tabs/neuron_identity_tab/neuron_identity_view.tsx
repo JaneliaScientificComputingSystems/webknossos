@@ -895,8 +895,7 @@ function NeuronIdentityPanel() {
     setIgnoredNames,
     selectedReferenceDatasets,
     contactEdges,
-    selectedEmbryo,
-    selectedTimepoint,
+    selectedAtlasKeys,
     isRunning,
     canRun,
     run,
@@ -1420,8 +1419,8 @@ function NeuronIdentityPanel() {
                   : selectedReferenceDatasets.size === 0
                     ? "Check at least one reference dataset first."
                     : undefined
-                : selectedEmbryo == null || selectedTimepoint == null
-                  ? "Enter an embryo and timepoint first."
+                : selectedAtlasKeys.size === 0
+                  ? "Check at least one reference atlas first."
                   : undefined
           }
         >
@@ -1434,7 +1433,11 @@ function NeuronIdentityPanel() {
             block
           >
             Run prediction
-            {predictionMode === "contactome" && selectedReferenceDatasets.size > 1 ? "s" : ""}
+            {(predictionMode === "contactome"
+              ? selectedReferenceDatasets.size
+              : selectedAtlasKeys.size) > 1
+              ? "s"
+              : ""}
           </Button>
         </Tooltip>
         {confirmedNamesDiff != null &&

@@ -44,6 +44,11 @@ export type NuclearPredictResponsePayload = {
   predictions: NuclearNodePredictionPayload[];
 };
 
+export type RegisteredAtlas = {
+  embryo: string;
+  timepoint: number;
+};
+
 const DEFAULT_BASE_URL = "http://localhost:8011";
 
 function getBaseUrl(): string {
@@ -83,4 +88,9 @@ export async function requestNuclearPredictions(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+}
+
+/** GET the list of embryo/timepoint reference atlases currently registered on the service. */
+export async function getRegisteredAtlases(): Promise<RegisteredAtlas[]> {
+  return fetchJson<RegisteredAtlas[]>("/atlases");
 }

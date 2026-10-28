@@ -20,6 +20,7 @@ import {
   parseContactProfile,
 } from "viewer/view/right_border_tabs/predictions_tab/contact_profile";
 import { parseOfflinePredictions } from "viewer/view/right_border_tabs/predictions_tab/offline_predictions";
+import { atlasKeyFor } from "viewer/view/right_border_tabs/predictions_tab/prediction_configuration";
 import { usePredictionConfiguration } from "viewer/view/right_border_tabs/predictions_tab/prediction_configuration_context";
 
 const { Text } = Typography;
@@ -40,12 +41,12 @@ export default function PredictionsView() {
     referenceDatasetsStatus,
     selectedReferenceDatasets,
     toggleReferenceDataset,
-    selectedEmbryo,
-    setSelectedEmbryo,
-    selectedTimepoint,
-    setSelectedTimepoint,
+    selectedAtlasKeys,
+    toggleAtlas,
     nTrials,
     setNTrials,
+    registeredAtlases,
+    registeredAtlasesStatus,
     writeMergedCandidates,
   } = usePredictionConfiguration();
 
@@ -214,33 +215,46 @@ export default function PredictionsView() {
       {predictionMode === "nuclear" && (
         <>
           <Text strong style={{ display: "block", marginBottom: 4 }}>
-            Reference atlas
+            Reference atlases
           </Text>
           <Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
-            Embryo and timepoint to match against — must already be registered on the nuclear
-            prediction service. Positions are read directly from each tree's node; no file upload
-            needed.
+            Embryo/timepoint atlases to match against, fetched from the nuclear prediction service.
+            Run prediction runs once per checked atlas. Positions are read directly from each tree's
+            node; no file upload needed.
           </Text>
-          <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
-            <Text style={{ fontSize: 12, flex: "0 0 auto" }}>Embryo:</Text>
-            <Input
-              size="small"
-              value={selectedEmbryo ?? ""}
-              onChange={(event) => setSelectedEmbryo(event.target.value || null)}
-              placeholder="e.g. embryo1"
-              style={{ flex: 1 }}
-            />
-          </div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
-            <Text style={{ fontSize: 12, flex: "0 0 auto" }}>Timepoint:</Text>
-            <InputNumber
-              size="small"
-              value={selectedTimepoint}
-              onChange={(value) => setSelectedTimepoint(typeof value === "number" ? value : null)}
-              placeholder="e.g. 120"
-              style={{ flex: 1 }}
-            />
-          </div>
+          {registeredAtlasesStatus === "loading" && (
+            <Text style={{ display: "block", fontSize: 12, marginBottom: 8 }}>
+              Loading atlases…
+            </Text>
+          )}
+          {registeredAtlasesStatus === "failed" && (
+            <Text type="danger" style={{ display: "block", fontSize: 12, marginBottom: 8 }}>
+              Could not load registered atlases.
+            </Text>
+          )}
+          {registeredAtlasesStatus === "loaded" && registeredAtlases.length === 0 && (
+            <Text style={{ display: "block", fontSize: 12, marginBottom: 8 }}>
+              No atlases registered on the service yet.
+            </Text>
+          )}
+          {registeredAtlasesStatus === "loaded" && registeredAtlases.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 16px", marginBottom: 8 }}>
+              {registeredAtlases.map((atlas) => {
+                const key = atlasKeyFor(atlas.embryo, atlas.timepoint);
+                return (
+                  <Checkbox
+                    key={key}
+                    checked={selectedAtlasKeys.has(key)}
+                    onChange={(event) =>
+                      toggleAtlas(atlas.embryo, atlas.timepoint, event.target.checked)
+                    }
+                  >
+                    {atlas.embryo} / t{atlas.timepoint}
+                  </Checkbox>
+                );
+              })}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
             <Tooltip title="Number of perturbed matching trials to ensemble into each tree's confidence score.">
               <Text style={{ fontSize: 12, flex: "0 0 auto" }}>Trials:</Text>

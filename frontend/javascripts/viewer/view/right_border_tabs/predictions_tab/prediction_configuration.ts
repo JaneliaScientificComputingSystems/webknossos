@@ -34,8 +34,10 @@ import {
   getDistinctNeuronIds,
 } from "viewer/view/right_border_tabs/predictions_tab/contact_profile";
 import {
+  getRegisteredAtlases,
   type NuclearInputNode,
   type NuclearPredictRequestPayload,
+  type RegisteredAtlas,
   requestNuclearPredictions,
 } from "viewer/view/right_border_tabs/predictions_tab/nuclear_prediction_client";
 import {
@@ -57,6 +59,18 @@ import {
 // instead of the later run silently overwriting the earlier one's score.
 function predictionSourceFor(referenceDataset: string): string {
   return `prediction:${referenceDataset}`;
+}
+
+export function atlasKeyFor(embryo: string, timepoint: number): string {
+  return `${embryo}|${timepoint}`;
+}
+
+function parseAtlasKey(key: string): { embryo: string; timepoint: number } {
+  const separatorIndex = key.lastIndexOf("|");
+  return {
+    embryo: key.slice(0, separatorIndex),
+    timepoint: Number(key.slice(separatorIndex + 1)),
+  };
 }
 
 export type WriteResult = {
@@ -97,13 +111,19 @@ export function usePredictionConfigurationState() {
     new Set(),
   );
 
-  // Nuclear-position service inputs — embryo/timepoint select which
-  // already-registered reference atlas to match against (registered on the
-  // service out-of-band, not from this UI); nTrials controls the ensemble
-  // size behind the service's confidence scores.
-  const [selectedEmbryo, setSelectedEmbryo] = useState<string | null>(null);
-  const [selectedTimepoint, setSelectedTimepoint] = useState<number | null>(null);
+  // Nuclear-position service inputs — one or more already-registered
+  // reference atlases to match against (registered on the service
+  // out-of-band, not from this UI), keyed as "embryo|timepoint" strings
+  // (mirroring selectedReferenceDatasets's Set<string> shape) so multiple
+  // atlases can be checked at once, same as contactome's reference-dataset
+  // checkboxes; nTrials controls the ensemble size behind the service's
+  // confidence scores.
+  const [selectedAtlasKeys, setSelectedAtlasKeys] = useState<Set<string>>(new Set());
   const [nTrials, setNTrials] = useState(20);
+  const [registeredAtlases, setRegisteredAtlases] = useState<RegisteredAtlas[]>([]);
+  const [registeredAtlasesStatus, setRegisteredAtlasesStatus] = useState<
+    "loading" | "loaded" | "failed"
+  >("loading");
   const [referenceDatasetsStatus, setReferenceDatasetsStatus] = useState<
     "loading" | "loaded" | "failed"
   >("loading");
@@ -143,6 +163,31 @@ export function usePredictionConfigurationState() {
     };
   }, []);
 
+  // Populate the embryo/timepoint picker from the nuclear service itself —
+  // same reasoning as the contactome reference-dataset fetch above, it's
+  // the service (not the frontend) that knows which atlases are currently
+  // registered and can actually be matched against.
+  useEffect(() => {
+    let cancelled = false;
+    getRegisteredAtlases().then(
+      (atlases) => {
+        if (cancelled) {
+          return;
+        }
+        setRegisteredAtlases(atlases);
+        setRegisteredAtlasesStatus("loaded");
+      },
+      () => {
+        if (!cancelled) {
+          setRegisteredAtlasesStatus("failed");
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const toggleReferenceDataset = (referenceDataset: string, checked: boolean) => {
     setSelectedReferenceDatasets((current) => {
       const next = new Set(current);
@@ -150,6 +195,19 @@ export function usePredictionConfigurationState() {
         next.add(referenceDataset);
       } else {
         next.delete(referenceDataset);
+      }
+      return next;
+    });
+  };
+
+  const toggleAtlas = (embryo: string, timepoint: number, checked: boolean) => {
+    const key = atlasKeyFor(embryo, timepoint);
+    setSelectedAtlasKeys((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(key);
+      } else {
+        next.delete(key);
       }
       return next;
     });
@@ -184,8 +242,7 @@ export function usePredictionConfigurationState() {
       if (persisted.selectedReferenceDatasets.length > 0) {
         setSelectedReferenceDatasets(new Set(persisted.selectedReferenceDatasets));
       }
-      setSelectedEmbryo(persisted.selectedEmbryo);
-      setSelectedTimepoint(persisted.selectedTimepoint);
+      setSelectedAtlasKeys(new Set(persisted.selectedAtlasKeys));
       setNTrials(persisted.nTrials);
     }
     setHasLoadedPersistedConfig(true);
@@ -208,8 +265,7 @@ export function usePredictionConfigurationState() {
       lastRunConfirmedNames:
         lastRunConfirmedNames != null ? Array.from(lastRunConfirmedNames) : null,
       selectedReferenceDatasets: Array.from(selectedReferenceDatasets),
-      selectedEmbryo,
-      selectedTimepoint,
+      selectedAtlasKeys: Array.from(selectedAtlasKeys),
       nTrials,
     };
     latestConfigWriteId.current += 1;
@@ -240,8 +296,7 @@ export function usePredictionConfigurationState() {
     ignoredNames,
     lastRunConfirmedNames,
     selectedReferenceDatasets,
-    selectedEmbryo,
-    selectedTimepoint,
+    selectedAtlasKeys,
     nTrials,
     dispatch,
   ]);
@@ -343,8 +398,16 @@ export function usePredictionConfigurationState() {
       // aren't in BatchableUpdateTreeAction's allowlist — the reducer-level
       // `enableBatching` wrapper replays any action array regardless of that
       // TS-only restriction (see scratch/tree_identity_port_plan.md), so this
-      // is a type-level cast, not a runtime assumption.
-      dispatch(batchActions(actions, "BATCH_UPDATE_IDENTITY") as unknown as SkeletonTracingAction);
+      // is a type-level cast, not a runtime assumption. The composite
+      // action's own type MUST be "BATCH_UPDATE_GROUPS_AND_TREES" (not an
+      // invented label) — SkeletonTracingSaveRelevantActions only watches
+      // for that exact type string to feed the save queue; any other label
+      // updates the in-memory Redux state (so the UI looks right) but is
+      // silently never persisted, which is why confirmed identities were
+      // reverting on page refresh.
+      dispatch(
+        batchActions(actions, "BATCH_UPDATE_GROUPS_AND_TREES") as unknown as SkeletonTracingAction,
+      );
     }
     if (skippedMissingTreeCount > 0) {
       Toast.info(
@@ -361,7 +424,7 @@ export function usePredictionConfigurationState() {
 
   const canRunContactome =
     allowUpdate && contactEdges.length > 0 && selectedReferenceDatasets.size > 0;
-  const canRunNuclear = allowUpdate && selectedEmbryo != null && selectedTimepoint != null;
+  const canRunNuclear = allowUpdate && selectedAtlasKeys.size > 0;
   const canRun = !isRunning && (predictionMode === "contactome" ? canRunContactome : canRunNuclear);
 
   const runContactome = async () => {
@@ -457,13 +520,14 @@ export function usePredictionConfigurationState() {
   };
 
   const runNuclear = async () => {
-    if (trees == null || selectedEmbryo == null || selectedTimepoint == null) {
+    if (trees == null || selectedAtlasKeys.size === 0) {
       return;
     }
     // Every non-ignored tree in the skeleton is a query target — unlike the
     // contactome mode, there's no uploaded file defining which trees matter;
     // the nuclear service matches against whatever's actually in the
-    // skeleton layer, using each tree's own node position.
+    // skeleton layer, using each tree's own node position. Built once since
+    // it doesn't depend on which atlas is being matched against.
     const requestNodes: NuclearInputNode[] = Array.from(trees.values())
       .filter((tree) => !getTreeIdentity(tree).ignored)
       .map((tree) => {
@@ -477,35 +541,52 @@ export function usePredictionConfigurationState() {
         };
       });
 
-    const payload: NuclearPredictRequestPayload = {
-      nodes: requestNodes,
-      embryo: selectedEmbryo,
-      timepoint: selectedTimepoint,
-      n_trials: nTrials,
-    };
+    // One request + one write per checked atlas, run in sequence rather
+    // than in parallel — same reasoning as runContactome's loop: these all
+    // write to the same trees' metadata, and writeMergedCandidates reads
+    // each tree's CURRENT metadata before merging in its own source's
+    // entry, so running them concurrently could let one run's read miss
+    // another's not-yet-dispatched write.
+    let totalWritten = 0;
+    const failedAtlases: string[] = [];
+    for (const atlasKey of selectedAtlasKeys) {
+      const { embryo, timepoint } = parseAtlasKey(atlasKey);
+      const payload: NuclearPredictRequestPayload = {
+        nodes: requestNodes,
+        embryo,
+        timepoint,
+        n_trials: nTrials,
+      };
 
-    let response: Awaited<ReturnType<typeof requestNuclearPredictions>>;
-    try {
-      response = await requestNuclearPredictions(payload);
-    } catch (exception) {
-      Toast.error(
-        exception instanceof Error
-          ? exception.message
-          : "Could not reach the nuclear prediction service.",
+      let response: Awaited<ReturnType<typeof requestNuclearPredictions>>;
+      try {
+        response = await requestNuclearPredictions(payload);
+      } catch (exception) {
+        failedAtlases.push(atlasKey);
+        Toast.error(
+          `${embryo}/t${timepoint}: ${
+            exception instanceof Error
+              ? exception.message
+              : "Could not reach the nuclear prediction service."
+          }`,
+        );
+        continue;
+      }
+
+      const { written } = writeMergedCandidates(
+        nuclearPredictionSourceFor(embryo, timepoint),
+        response.predictions.map((prediction) => ({
+          segment_id: prediction.node_id,
+          candidates: prediction.candidates,
+        })),
       );
-      return;
+      totalWritten += written;
     }
 
-    const { written } = writeMergedCandidates(
-      nuclearPredictionSourceFor(selectedEmbryo, selectedTimepoint),
-      response.predictions.map((prediction) => ({
-        segment_id: prediction.node_id,
-        candidates: prediction.candidates,
-      })),
-    );
-    if (written > 0) {
+    if (totalWritten > 0) {
+      const atlasCount = selectedAtlasKeys.size - failedAtlases.length;
       Toast.success(
-        `Predicted identities for ${written} tree(s) against ${selectedEmbryo}/t${selectedTimepoint}.`,
+        `Predicted identities for ${totalWritten} tree(s) against ${atlasCount} atlas(es).`,
       );
     }
   };
@@ -553,12 +634,12 @@ export function usePredictionConfigurationState() {
     referenceDatasetsStatus,
     selectedReferenceDatasets,
     toggleReferenceDataset,
-    selectedEmbryo,
-    setSelectedEmbryo,
-    selectedTimepoint,
-    setSelectedTimepoint,
+    selectedAtlasKeys,
+    toggleAtlas,
     nTrials,
     setNTrials,
+    registeredAtlases,
+    registeredAtlasesStatus,
     isRunning,
     canRun,
     run,

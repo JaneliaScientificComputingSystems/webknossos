@@ -27,9 +27,8 @@ export type PersistedPredictionConfig = {
   lastRunConfirmedNames: string[] | null;
   /** Reference datasets checked in the Configuration tab. Serialized as an array (JSON has no Set type); callers convert to/from Set at the boundary. */
   selectedReferenceDatasets: string[];
-  /** Nuclear-position service inputs — null until the user has typed something, so an untouched config doesn't send an empty-string embryo to the service. */
-  selectedEmbryo: string | null;
-  selectedTimepoint: number | null;
+  /** Nuclear-position reference atlases checked in the Configuration tab, encoded as "embryo|timepoint" strings (mirroring selectedReferenceDatasets's shape) — one prediction request is made per checked atlas, same as contactome's reference datasets. Serialized as an array (JSON has no Set type); callers convert to/from Set at the boundary. */
+  selectedAtlasKeys: string[];
   nTrials: number;
 };
 
@@ -78,9 +77,9 @@ export function parseConfigFromDescription(description: string): PersistedPredic
             (name: unknown): name is string => typeof name === "string",
           )
         : [],
-      selectedEmbryo: typeof parsed.selectedEmbryo === "string" ? parsed.selectedEmbryo : null,
-      selectedTimepoint:
-        typeof parsed.selectedTimepoint === "number" ? parsed.selectedTimepoint : null,
+      selectedAtlasKeys: Array.isArray(parsed.selectedAtlasKeys)
+        ? parsed.selectedAtlasKeys.filter((key: unknown): key is string => typeof key === "string")
+        : [],
       nTrials: typeof parsed.nTrials === "number" ? parsed.nTrials : 20,
     };
   } catch (_exception) {
