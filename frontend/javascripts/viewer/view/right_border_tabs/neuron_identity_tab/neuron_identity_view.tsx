@@ -890,10 +890,13 @@ function NeuronIdentityPanel() {
   // PredictionConfigurationContext — shared, via that context, with
   // PredictionsView's own controls and the always-visible Run button below.
   const {
+    predictionMode,
     ignoredNames,
     setIgnoredNames,
     selectedReferenceDatasets,
     contactEdges,
+    selectedEmbryo,
+    selectedTimepoint,
     isRunning,
     canRun,
     run,
@@ -1327,32 +1330,34 @@ function NeuronIdentityPanel() {
         )}
       </div>
 
-      <div
-        style={{
-          padding: 8,
-          borderBottom: "1px solid var(--color-wk-border, rgba(128,128,128,0.2))",
-          flex: "0 0 auto",
-        }}
-      >
-        <Button
-          type="text"
-          size="small"
-          style={{ padding: 0, height: "auto", fontWeight: "bold", fontSize: 12 }}
-          icon={isDiagramExpanded ? <CaretUpOutlined /> : <CaretDownOutlined />}
-          iconPosition="end"
-          onClick={() => setIsDiagramExpanded((expanded) => !expanded)}
+      {predictionMode === "contactome" && (
+        <div
+          style={{
+            padding: 8,
+            borderBottom: "1px solid var(--color-wk-border, rgba(128,128,128,0.2))",
+            flex: "0 0 auto",
+          }}
         >
-          Neuron diagram{diagramName != null ? `: ${diagramName}` : ""}
-        </Button>
-        {isDiagramExpanded &&
-          (diagramName == null ? (
-            <Text style={{ display: "block", fontSize: 12, marginTop: 4 }}>
-              Right-click a candidate name and choose "View diagram".
-            </Text>
-          ) : (
-            <NeuronDiagram name={diagramName} />
-          ))}
-      </div>
+          <Button
+            type="text"
+            size="small"
+            style={{ padding: 0, height: "auto", fontWeight: "bold", fontSize: 12 }}
+            icon={isDiagramExpanded ? <CaretUpOutlined /> : <CaretDownOutlined />}
+            iconPosition="end"
+            onClick={() => setIsDiagramExpanded((expanded) => !expanded)}
+          >
+            Neuron diagram{diagramName != null ? `: ${diagramName}` : ""}
+          </Button>
+          {isDiagramExpanded &&
+            (diagramName == null ? (
+              <Text style={{ display: "block", fontSize: 12, marginTop: 4 }}>
+                Right-click a candidate name and choose "View diagram".
+              </Text>
+            ) : (
+              <NeuronDiagram name={diagramName} />
+            ))}
+        </div>
+      )}
 
       <Tabs
         activeKey={subTab}
@@ -1409,10 +1414,14 @@ function NeuronIdentityPanel() {
           title={
             !allowUpdate
               ? "Open an editable annotation to run prediction."
-              : contactEdges.length === 0
-                ? "Upload a contact profile first."
-                : selectedReferenceDatasets.size === 0
-                  ? "Check at least one reference dataset first."
+              : predictionMode === "contactome"
+                ? contactEdges.length === 0
+                  ? "Upload a contact profile first."
+                  : selectedReferenceDatasets.size === 0
+                    ? "Check at least one reference dataset first."
+                    : undefined
+                : selectedEmbryo == null || selectedTimepoint == null
+                  ? "Enter an embryo and timepoint first."
                   : undefined
           }
         >
@@ -1424,7 +1433,8 @@ function NeuronIdentityPanel() {
             onClick={run}
             block
           >
-            Run prediction{selectedReferenceDatasets.size > 1 ? "s" : ""}
+            Run prediction
+            {predictionMode === "contactome" && selectedReferenceDatasets.size > 1 ? "s" : ""}
           </Button>
         </Tooltip>
         {confirmedNamesDiff != null &&

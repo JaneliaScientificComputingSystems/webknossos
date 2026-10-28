@@ -34,6 +34,11 @@ import {
   getDistinctNeuronIds,
 } from "viewer/view/right_border_tabs/predictions_tab/contact_profile";
 import {
+  type NuclearInputNode,
+  type NuclearPredictRequestPayload,
+  requestNuclearPredictions,
+} from "viewer/view/right_border_tabs/predictions_tab/nuclear_prediction_client";
+import {
   getReferenceDatasets,
   type NodePredictionPayload,
   type PredictionServiceInputNode,
@@ -43,6 +48,7 @@ import {
 } from "viewer/view/right_border_tabs/predictions_tab/prediction_client";
 import {
   encodeConfigIntoDescription,
+  type PredictionMode,
   parseConfigFromDescription,
 } from "viewer/view/right_border_tabs/predictions_tab/prediction_config_persistence";
 
@@ -73,6 +79,13 @@ export function usePredictionConfigurationState() {
       !state.annotation.isLockedByOwner,
   );
 
+  // Which service the Configuration tab currently shows inputs for.
+  // Switching modes doesn't clear the other mode's config (contactEdges/
+  // selectedReferenceDatasets vs. selectedEmbryo/selectedTimepoint/nTrials
+  // below all persist independently of this), so toggling back and forth
+  // doesn't lose anything already set up.
+  const [predictionMode, setPredictionMode] = useState<PredictionMode>("contactome");
+
   // Names excluded from the reference contactome used for live Run matching,
   // and from Search by Name's autocomplete suggestions elsewhere in the
   // neuron-identity panel. Persisted into annotation.description (see
@@ -83,6 +96,14 @@ export function usePredictionConfigurationState() {
   const [selectedReferenceDatasets, setSelectedReferenceDatasets] = useState<Set<string>>(
     new Set(),
   );
+
+  // Nuclear-position service inputs — embryo/timepoint select which
+  // already-registered reference atlas to match against (registered on the
+  // service out-of-band, not from this UI); nTrials controls the ensemble
+  // size behind the service's confidence scores.
+  const [selectedEmbryo, setSelectedEmbryo] = useState<string | null>(null);
+  const [selectedTimepoint, setSelectedTimepoint] = useState<number | null>(null);
+  const [nTrials, setNTrials] = useState(20);
   const [referenceDatasetsStatus, setReferenceDatasetsStatus] = useState<
     "loading" | "loaded" | "failed"
   >("loading");
@@ -152,6 +173,7 @@ export function usePredictionConfigurationState() {
   useEffect(() => {
     const persisted = parseConfigFromDescription(annotationDescriptionAtMount());
     if (persisted != null) {
+      setPredictionMode(persisted.predictionMode);
       setContactEdges(persisted.contactEdges);
       setContactFileName(persisted.contactFileName);
       setContactUploadedAt(persisted.contactUploadedAt);
@@ -162,6 +184,9 @@ export function usePredictionConfigurationState() {
       if (persisted.selectedReferenceDatasets.length > 0) {
         setSelectedReferenceDatasets(new Set(persisted.selectedReferenceDatasets));
       }
+      setSelectedEmbryo(persisted.selectedEmbryo);
+      setSelectedTimepoint(persisted.selectedTimepoint);
+      setNTrials(persisted.nTrials);
     }
     setHasLoadedPersistedConfig(true);
     // Intentionally run once on mount only (new annotation.description
@@ -175,6 +200,7 @@ export function usePredictionConfigurationState() {
       return;
     }
     const config = {
+      predictionMode,
       contactEdges,
       contactFileName,
       contactUploadedAt,
@@ -182,6 +208,9 @@ export function usePredictionConfigurationState() {
       lastRunConfirmedNames:
         lastRunConfirmedNames != null ? Array.from(lastRunConfirmedNames) : null,
       selectedReferenceDatasets: Array.from(selectedReferenceDatasets),
+      selectedEmbryo,
+      selectedTimepoint,
+      nTrials,
     };
     latestConfigWriteId.current += 1;
     const configWriteId = latestConfigWriteId.current;
@@ -204,12 +233,16 @@ export function usePredictionConfigurationState() {
     // description change from ANYWHERE, not just from this hook's own state.
   }, [
     hasLoadedPersistedConfig,
+    predictionMode,
     contactEdges,
     contactFileName,
     contactUploadedAt,
     ignoredNames,
     lastRunConfirmedNames,
     selectedReferenceDatasets,
+    selectedEmbryo,
+    selectedTimepoint,
+    nTrials,
     dispatch,
   ]);
 
@@ -326,14 +359,159 @@ export function usePredictionConfigurationState() {
     };
   };
 
-  const canRun =
-    allowUpdate && contactEdges.length > 0 && selectedReferenceDatasets.size > 0 && !isRunning;
+  const canRunContactome =
+    allowUpdate && contactEdges.length > 0 && selectedReferenceDatasets.size > 0;
+  const canRunNuclear = allowUpdate && selectedEmbryo != null && selectedTimepoint != null;
+  const canRun = !isRunning && (predictionMode === "contactome" ? canRunContactome : canRunNuclear);
+
+  const runContactome = async () => {
+    if (trees == null || contactEdges.length === 0 || selectedReferenceDatasets.size === 0) {
+      return;
+    }
+    // The contact profile's neurons are the prediction targets, regardless
+    // of whether they're already in the local tree list — a fresh
+    // contact profile commonly references trees the user hasn't clicked
+    // on yet. Build each entry from the live tree if one already
+    // exists (so its real name/confirmed status reaches the service),
+    // falling back to a minimal placeholder otherwise. Read fresh at click
+    // time so trees added after the file was loaded (e.g. via
+    // proofreading in between Run clicks) are picked up too.
+    // Trees marked "ignore (not a real cell)" are dropped entirely —
+    // from both the targets AND any contact edge that references them —
+    // so they're never sent to the matcher at all.
+    const ignoredIds = new Set(
+      Array.from(trees.values())
+        .filter((tree) => getTreeIdentity(tree).ignored)
+        .map((tree) => tree.treeId),
+    );
+    const targetIds = getDistinctNeuronIds(contactEdges).filter((id) => !ignoredIds.has(id));
+    const requestNodes: PredictionServiceInputNode[] = targetIds.map((treeId) => {
+      const tree = trees.getNullable(treeId);
+      if (tree == null) {
+        return { id: treeId, name: null, is_confirmed: false };
+      }
+      const identity = getTreeIdentity(tree);
+      return {
+        // The CONFIRMED identity name, not WK's native tree.name field
+        // (set independently of this feature's confirmation system) —
+        // using tree.name here would send is_confirmed: true paired with
+        // name: null for every confirmed tree, which the service
+        // rejected (a seed needs both to be set).
+        id: tree.treeId,
+        name: identity.confirmed,
+        is_confirmed: identity.confirmed != null,
+      };
+    });
+    const requestContactEdges = contactEdges
+      .filter((edge) => !ignoredIds.has(edge.neuronA) && !ignoredIds.has(edge.neuronB))
+      .map((edge) => ({
+        neuron_a: edge.neuronA,
+        neuron_b: edge.neuronB,
+        weight: edge.weight,
+      }));
+
+    // One request + one write per checked reference dataset, run in
+    // sequence rather than in parallel — these all write to the same
+    // trees' metadata, and writeMergedCandidates reads each tree's
+    // CURRENT metadata before merging in its own source's entry, so
+    // running them concurrently could let one run's read miss another's
+    // not-yet-dispatched write.
+    let totalWritten = 0;
+    const failedDatasets: string[] = [];
+    for (const referenceDataset of selectedReferenceDatasets) {
+      const payload: PredictRequestPayload = {
+        segments: requestNodes,
+        contact_edges: requestContactEdges,
+        reference_dataset: referenceDataset,
+        ignored_names: ignoredNames,
+      };
+
+      let response: PredictResponsePayload;
+      try {
+        response = await requestPredictions(payload);
+      } catch (exception) {
+        failedDatasets.push(referenceDataset);
+        Toast.error(
+          `${referenceDataset}: ${
+            exception instanceof Error
+              ? exception.message
+              : "Could not reach the prediction service."
+          }`,
+        );
+        continue;
+      }
+
+      const { written } = writeMergedCandidates(
+        predictionSourceFor(referenceDataset),
+        response.predictions,
+      );
+      totalWritten += written;
+    }
+
+    if (totalWritten > 0) {
+      const datasetCount = selectedReferenceDatasets.size - failedDatasets.length;
+      Toast.success(
+        `Predicted identities for ${totalWritten} tree(s) against ${datasetCount} dataset(s).`,
+      );
+    }
+  };
+
+  const runNuclear = async () => {
+    if (trees == null || selectedEmbryo == null || selectedTimepoint == null) {
+      return;
+    }
+    // Every non-ignored tree in the skeleton is a query target — unlike the
+    // contactome mode, there's no uploaded file defining which trees matter;
+    // the nuclear service matches against whatever's actually in the
+    // skeleton layer, using each tree's own node position.
+    const requestNodes: NuclearInputNode[] = Array.from(trees.values())
+      .filter((tree) => !getTreeIdentity(tree).ignored)
+      .map((tree) => {
+        const node = tree.nodes.values().next().value;
+        const identity = getTreeIdentity(tree);
+        return {
+          id: tree.treeId,
+          position: node != null ? node.untransformedPosition : [0, 0, 0],
+          name: identity.confirmed,
+          is_confirmed: identity.confirmed != null,
+        };
+      });
+
+    const payload: NuclearPredictRequestPayload = {
+      nodes: requestNodes,
+      embryo: selectedEmbryo,
+      timepoint: selectedTimepoint,
+      n_trials: nTrials,
+    };
+
+    let response: Awaited<ReturnType<typeof requestNuclearPredictions>>;
+    try {
+      response = await requestNuclearPredictions(payload);
+    } catch (exception) {
+      Toast.error(
+        exception instanceof Error
+          ? exception.message
+          : "Could not reach the nuclear prediction service.",
+      );
+      return;
+    }
+
+    const { written } = writeMergedCandidates(
+      nuclearPredictionSourceFor(selectedEmbryo, selectedTimepoint),
+      response.predictions.map((prediction) => ({
+        segment_id: prediction.node_id,
+        candidates: prediction.candidates,
+      })),
+    );
+    if (written > 0) {
+      Toast.success(
+        `Predicted identities for ${written} tree(s) against ${selectedEmbryo}/t${selectedTimepoint}.`,
+      );
+    }
+  };
 
   const run = async () => {
     if (trees == null) {
-      return;
-    }
-    if (contactEdges.length === 0 || selectedReferenceDatasets.size === 0) {
       return;
     }
     setIsRunning(true);
@@ -350,91 +528,10 @@ export function usePredictionConfigurationState() {
       }
       setLastRunConfirmedNames(confirmedNamesAtRunStart);
 
-      // The contact profile's neurons are the prediction targets, regardless
-      // of whether they're already in the local tree list — a fresh
-      // contact profile commonly references trees the user hasn't clicked
-      // on yet. Build each entry from the live tree if one already
-      // exists (so its real name/confirmed status reaches the service),
-      // falling back to a minimal placeholder otherwise. Read fresh at click
-      // time so trees added after the file was loaded (e.g. via
-      // proofreading in between Run clicks) are picked up too.
-      // Trees marked "ignore (not a real cell)" are dropped entirely —
-      // from both the targets AND any contact edge that references them —
-      // so they're never sent to the matcher at all.
-      const ignoredIds = new Set(
-        Array.from(trees.values())
-          .filter((tree) => getTreeIdentity(tree).ignored)
-          .map((tree) => tree.treeId),
-      );
-      const targetIds = getDistinctNeuronIds(contactEdges).filter((id) => !ignoredIds.has(id));
-      const requestNodes: PredictionServiceInputNode[] = targetIds.map((treeId) => {
-        const tree = trees.getNullable(treeId);
-        if (tree == null) {
-          return { id: treeId, name: null, is_confirmed: false };
-        }
-        const identity = getTreeIdentity(tree);
-        return {
-          // The CONFIRMED identity name, not WK's native tree.name field
-          // (set independently of this feature's confirmation system) —
-          // using tree.name here would send is_confirmed: true paired with
-          // name: null for every confirmed tree, which the service
-          // rejected (a seed needs both to be set).
-          id: tree.treeId,
-          name: identity.confirmed,
-          is_confirmed: identity.confirmed != null,
-        };
-      });
-      const requestContactEdges = contactEdges
-        .filter((edge) => !ignoredIds.has(edge.neuronA) && !ignoredIds.has(edge.neuronB))
-        .map((edge) => ({
-          neuron_a: edge.neuronA,
-          neuron_b: edge.neuronB,
-          weight: edge.weight,
-        }));
-
-      // One request + one write per checked reference dataset, run in
-      // sequence rather than in parallel — these all write to the same
-      // trees' metadata, and writeMergedCandidates reads each tree's
-      // CURRENT metadata before merging in its own source's entry, so
-      // running them concurrently could let one run's read miss another's
-      // not-yet-dispatched write.
-      let totalWritten = 0;
-      const failedDatasets: string[] = [];
-      for (const referenceDataset of selectedReferenceDatasets) {
-        const payload: PredictRequestPayload = {
-          segments: requestNodes,
-          contact_edges: requestContactEdges,
-          reference_dataset: referenceDataset,
-          ignored_names: ignoredNames,
-        };
-
-        let response: PredictResponsePayload;
-        try {
-          response = await requestPredictions(payload);
-        } catch (exception) {
-          failedDatasets.push(referenceDataset);
-          Toast.error(
-            `${referenceDataset}: ${
-              exception instanceof Error
-                ? exception.message
-                : "Could not reach the prediction service."
-            }`,
-          );
-          continue;
-        }
-
-        const { written } = writeMergedCandidates(
-          predictionSourceFor(referenceDataset),
-          response.predictions,
-        );
-        totalWritten += written;
-      }
-
-      if (totalWritten > 0) {
-        const datasetCount = selectedReferenceDatasets.size - failedDatasets.length;
-        Toast.success(
-          `Predicted identities for ${totalWritten} tree(s) against ${datasetCount} dataset(s).`,
-        );
+      if (predictionMode === "contactome") {
+        await runContactome();
+      } else {
+        await runNuclear();
       }
     } finally {
       setIsRunning(false);
@@ -443,6 +540,8 @@ export function usePredictionConfigurationState() {
 
   return {
     allowUpdate,
+    predictionMode,
+    setPredictionMode,
     ignoredNames,
     setIgnoredNames,
     contactEdges,
@@ -454,12 +553,25 @@ export function usePredictionConfigurationState() {
     referenceDatasetsStatus,
     selectedReferenceDatasets,
     toggleReferenceDataset,
+    selectedEmbryo,
+    setSelectedEmbryo,
+    selectedTimepoint,
+    setSelectedTimepoint,
+    nTrials,
+    setNTrials,
     isRunning,
     canRun,
     run,
     writeMergedCandidates,
     lastRunConfirmedNames,
   };
+}
+
+// Keyed by embryo+timepoint, not a single shared constant, so predictions
+// against different reference atlases are kept as parallel scores per name
+// instead of the later run silently overwriting the earlier one's score.
+function nuclearPredictionSourceFor(embryo: string, timepoint: number): string {
+  return `prediction:nuclear:${embryo}:${timepoint}`;
 }
 
 function annotationDescriptionAtMount(): string {

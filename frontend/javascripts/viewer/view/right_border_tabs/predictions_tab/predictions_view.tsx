@@ -1,5 +1,16 @@
 import { DeleteOutlined, UploadOutlined } from "@ant-design/icons";
-import { Button, Checkbox, Divider, Input, Tag, Tooltip, Typography, Upload } from "antd";
+import {
+  Button,
+  Checkbox,
+  Divider,
+  Input,
+  InputNumber,
+  Radio,
+  Tag,
+  Tooltip,
+  Typography,
+  Upload,
+} from "antd";
 import type { UploadChangeParam, UploadFile } from "antd/es/upload";
 import { readFileAsText } from "libs/read_file";
 import Toast from "libs/toast";
@@ -16,6 +27,8 @@ const { Text } = Typography;
 export default function PredictionsView() {
   const {
     allowUpdate,
+    predictionMode,
+    setPredictionMode,
     ignoredNames,
     setIgnoredNames,
     contactEdges,
@@ -27,6 +40,12 @@ export default function PredictionsView() {
     referenceDatasetsStatus,
     selectedReferenceDatasets,
     toggleReferenceDataset,
+    selectedEmbryo,
+    setSelectedEmbryo,
+    selectedTimepoint,
+    setSelectedTimepoint,
+    nTrials,
+    setNTrials,
     writeMergedCandidates,
   } = usePredictionConfiguration();
 
@@ -107,69 +126,134 @@ export default function PredictionsView() {
   return (
     <div style={{ padding: 12, height: "100%", overflowY: "auto" }}>
       <Text strong style={{ display: "block", marginBottom: 4 }}>
-        Contact profile
+        Prediction method
       </Text>
-      <Text style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
-        Upload a CSV/TSV file of tree contacts to use for ID prediction. Must have a header row with
-        "neuron1", "neuron2" (tree IDs), and "contact_strength" columns.
-      </Text>
-      <Upload
-        name="contactProfile"
-        accept=".csv,.tsv,text/csv,text/tab-separated-values"
-        showUploadList={false}
-        beforeUpload={() => false}
-        onChange={handleContactFileChange}
-        maxCount={1}
+      <Radio.Group
+        value={predictionMode}
+        onChange={(event) => setPredictionMode(event.target.value)}
+        style={{ marginBottom: 8 }}
       >
-        <Button icon={<UploadOutlined />}>Upload new contact profile</Button>
-      </Upload>
-      {contactFileName != null && (
-        <>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
-            <Text style={{ flex: 1 }} ellipsis>
-              {contactFileName}
-              {contactUploadedAt != null &&
-                ` (uploaded ${new Date(contactUploadedAt).toLocaleDateString()})`}
-            </Text>
-            <Tooltip title="Clear contact profile">
-              <Button size="small" icon={<DeleteOutlined />} onClick={clearContactProfile} />
-            </Tooltip>
-          </div>
-          <Text style={{ display: "block", fontSize: 12 }}>
-            {contactEdges.length} contact(s) across {countDistinctNeurons(contactEdges)} tree(s)
-          </Text>
-        </>
-      )}
+        <Radio.Button value="contactome">Contactome</Radio.Button>
+        <Radio.Button value="nuclear">Nuclear position</Radio.Button>
+      </Radio.Group>
 
       <Divider style={{ margin: "12px 0" }} />
 
-      <Text strong style={{ display: "block", marginBottom: 4 }}>
-        Reference datasets
-      </Text>
-      <Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
-        Developmental-stage contactomes to match against, fetched from the prediction service. Run
-        prediction runs once per checked dataset.
-      </Text>
-      {referenceDatasetsStatus === "loading" && (
-        <Text style={{ display: "block", fontSize: 12, marginBottom: 8 }}>Loading datasets…</Text>
+      {predictionMode === "contactome" && (
+        <>
+          <Text strong style={{ display: "block", marginBottom: 4 }}>
+            Contact profile
+          </Text>
+          <Text style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
+            Upload a CSV/TSV file of tree contacts to use for ID prediction. Must have a header row
+            with "neuron1", "neuron2" (tree IDs), and "contact_strength" columns.
+          </Text>
+          <Upload
+            name="contactProfile"
+            accept=".csv,.tsv,text/csv,text/tab-separated-values"
+            showUploadList={false}
+            beforeUpload={() => false}
+            onChange={handleContactFileChange}
+            maxCount={1}
+          >
+            <Button icon={<UploadOutlined />}>Upload new contact profile</Button>
+          </Upload>
+          {contactFileName != null && (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                <Text style={{ flex: 1 }} ellipsis>
+                  {contactFileName}
+                  {contactUploadedAt != null &&
+                    ` (uploaded ${new Date(contactUploadedAt).toLocaleDateString()})`}
+                </Text>
+                <Tooltip title="Clear contact profile">
+                  <Button size="small" icon={<DeleteOutlined />} onClick={clearContactProfile} />
+                </Tooltip>
+              </div>
+              <Text style={{ display: "block", fontSize: 12 }}>
+                {contactEdges.length} contact(s) across {countDistinctNeurons(contactEdges)} tree(s)
+              </Text>
+            </>
+          )}
+
+          <Divider style={{ margin: "12px 0" }} />
+
+          <Text strong style={{ display: "block", marginBottom: 4 }}>
+            Reference datasets
+          </Text>
+          <Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
+            Developmental-stage contactomes to match against, fetched from the prediction service.
+            Run prediction runs once per checked dataset.
+          </Text>
+          {referenceDatasetsStatus === "loading" && (
+            <Text style={{ display: "block", fontSize: 12, marginBottom: 8 }}>
+              Loading datasets…
+            </Text>
+          )}
+          {referenceDatasetsStatus === "failed" && (
+            <Text type="danger" style={{ display: "block", fontSize: 12, marginBottom: 8 }}>
+              Could not load datasets.
+            </Text>
+          )}
+          {referenceDatasetsStatus === "loaded" && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 16px", marginBottom: 8 }}>
+              {referenceDatasets.map((dataset) => (
+                <Checkbox
+                  key={dataset}
+                  checked={selectedReferenceDatasets.has(dataset)}
+                  onChange={(event) => toggleReferenceDataset(dataset, event.target.checked)}
+                >
+                  {dataset}
+                </Checkbox>
+              ))}
+            </div>
+          )}
+        </>
       )}
-      {referenceDatasetsStatus === "failed" && (
-        <Text type="danger" style={{ display: "block", fontSize: 12, marginBottom: 8 }}>
-          Could not load datasets.
-        </Text>
-      )}
-      {referenceDatasetsStatus === "loaded" && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 16px", marginBottom: 8 }}>
-          {referenceDatasets.map((dataset) => (
-            <Checkbox
-              key={dataset}
-              checked={selectedReferenceDatasets.has(dataset)}
-              onChange={(event) => toggleReferenceDataset(dataset, event.target.checked)}
-            >
-              {dataset}
-            </Checkbox>
-          ))}
-        </div>
+
+      {predictionMode === "nuclear" && (
+        <>
+          <Text strong style={{ display: "block", marginBottom: 4 }}>
+            Reference atlas
+          </Text>
+          <Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
+            Embryo and timepoint to match against — must already be registered on the nuclear
+            prediction service. Positions are read directly from each tree's node; no file upload
+            needed.
+          </Text>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
+            <Text style={{ fontSize: 12, flex: "0 0 auto" }}>Embryo:</Text>
+            <Input
+              size="small"
+              value={selectedEmbryo ?? ""}
+              onChange={(event) => setSelectedEmbryo(event.target.value || null)}
+              placeholder="e.g. embryo1"
+              style={{ flex: 1 }}
+            />
+          </div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
+            <Text style={{ fontSize: 12, flex: "0 0 auto" }}>Timepoint:</Text>
+            <InputNumber
+              size="small"
+              value={selectedTimepoint}
+              onChange={(value) => setSelectedTimepoint(typeof value === "number" ? value : null)}
+              placeholder="e.g. 120"
+              style={{ flex: 1 }}
+            />
+          </div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
+            <Tooltip title="Number of perturbed matching trials to ensemble into each tree's confidence score.">
+              <Text style={{ fontSize: 12, flex: "0 0 auto" }}>Trials:</Text>
+            </Tooltip>
+            <InputNumber
+              size="small"
+              min={1}
+              value={nTrials}
+              onChange={(value) => setNTrials(typeof value === "number" ? value : 20)}
+              style={{ flex: 1 }}
+            />
+          </div>
+        </>
       )}
 
       <Divider style={{ margin: "12px 0" }} />

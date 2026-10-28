@@ -13,7 +13,11 @@ import type { ContactEdge } from "viewer/view/right_border_tabs/predictions_tab/
 
 const CONFIG_MARKER = "<!-- wk-identity-prediction-config: do not edit below this line -->";
 
+export type PredictionMode = "contactome" | "nuclear";
+
 export type PersistedPredictionConfig = {
+  /** Which service the Configuration tab is currently showing inputs for. Doesn't clear the other mode's config on switch — see contactEdges/selectedReferenceDatasets vs. selectedEmbryo/selectedTimepoint below, which all persist independently of this. */
+  predictionMode: PredictionMode;
   contactEdges: ContactEdge[];
   contactFileName: string | null;
   /** ms since epoch, set when the contact profile was uploaded — null if contactFileName is null. */
@@ -23,6 +27,10 @@ export type PersistedPredictionConfig = {
   lastRunConfirmedNames: string[] | null;
   /** Reference datasets checked in the Configuration tab. Serialized as an array (JSON has no Set type); callers convert to/from Set at the boundary. */
   selectedReferenceDatasets: string[];
+  /** Nuclear-position service inputs — null until the user has typed something, so an untouched config doesn't send an empty-string embryo to the service. */
+  selectedEmbryo: string | null;
+  selectedTimepoint: number | null;
+  nTrials: number;
 };
 
 /** Strips the fenced config block (if any) from a saved description, returning just the human-written part. */
@@ -52,6 +60,7 @@ export function parseConfigFromDescription(description: string): PersistedPredic
       return null;
     }
     return {
+      predictionMode: parsed.predictionMode === "nuclear" ? "nuclear" : "contactome",
       contactEdges: parsed.contactEdges,
       contactFileName: typeof parsed.contactFileName === "string" ? parsed.contactFileName : null,
       contactUploadedAt:
@@ -69,6 +78,10 @@ export function parseConfigFromDescription(description: string): PersistedPredic
             (name: unknown): name is string => typeof name === "string",
           )
         : [],
+      selectedEmbryo: typeof parsed.selectedEmbryo === "string" ? parsed.selectedEmbryo : null,
+      selectedTimepoint:
+        typeof parsed.selectedTimepoint === "number" ? parsed.selectedTimepoint : null,
+      nTrials: typeof parsed.nTrials === "number" ? parsed.nTrials : 20,
     };
   } catch (_exception) {
     return null;
