@@ -3,11 +3,11 @@
  * names) into the annotation's own `description` field — the only
  * general-purpose, frontend-writable, per-annotation text field this fork of
  * webknossos exposes (no per-annotation key-value metadata list exists,
- * unlike the per-segment `metadata: MetadataEntryProto[]` this feature
- * already uses elsewhere). That field is also a human-facing free-text box
- * in the Info tab, so this config is appended after a fenced marker rather
- * than overwriting the field outright — anything the user or dataset owner
- * wrote above the marker survives every read/write round-trip untouched.
+ * unlike the per-tree `metadata: MetadataEntryProto[]` this feature already
+ * uses elsewhere). That field is also a human-facing free-text box in the
+ * Info tab, so this config is appended after a fenced marker rather than
+ * overwriting the field outright — anything the user or dataset owner wrote
+ * above the marker survives every read/write round-trip untouched.
  */
 import type { ContactEdge } from "viewer/view/right_border_tabs/predictions_tab/contact_profile";
 
@@ -23,8 +23,6 @@ export type PersistedPredictionConfig = {
   lastRunConfirmedNames: string[] | null;
   /** Reference datasets checked in the Configuration tab. Serialized as an array (JSON has no Set type); callers convert to/from Set at the boundary. */
   selectedReferenceDatasets: string[];
-  /** Whether segment_position_cache.ts scans loaded buckets for this annotation. Off by default; scoped per-annotation (not per-browser) like the rest of this config, since it only pays off / costs anything for the dataset this annotation belongs to. */
-  segmentPositionCacheEnabled: boolean;
 };
 
 /** Strips the fenced config block (if any) from a saved description, returning just the human-written part. */
@@ -71,7 +69,6 @@ export function parseConfigFromDescription(description: string): PersistedPredic
             (name: unknown): name is string => typeof name === "string",
           )
         : [],
-      segmentPositionCacheEnabled: parsed.segmentPositionCacheEnabled === true,
     };
   } catch (_exception) {
     return null;

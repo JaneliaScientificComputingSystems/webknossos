@@ -1,27 +1,28 @@
 /*
- * Neuron-identity data is stored inside the existing per-segment `metadata`
- * list (MetadataEntryProto[]) under a reserved `identity.*` key namespace, so
- * no backend schema change is required. This module is the single place
- * that knows that encoding; the rest of the feature works with the typed
- * `SegmentIdentity` view-model returned by `getSegmentIdentity`.
+ * Cell-identity data is stored inside the existing per-tree `metadata` list
+ * (MetadataEntryProto[]) under a reserved `identity.*` key namespace, so no
+ * backend schema change is required. This module is the single place that
+ * knows that encoding; the rest of the feature works with the typed
+ * `TreeIdentity` view-model returned by `getTreeIdentity`.
  *
- * Storage: each source (e.g. a live prediction run against one reference
- * dataset, or a separately-uploaded offline-prediction CSV) gets its OWN
- * metadata entry — `identity.source.<source>` — holding just that source's
- * candidates as a JSON array of [name, score] tuples (not {name, score}
- * objects — more compact), sorted by score descending. This is what shows up
- * in WK's native per-segment metadata table (Segments panel), so keeping one
- * entry per source, pre-sorted and tuple-encoded, makes the raw value
- * directly readable there instead of one big merged, unsorted, verbose JSON
- * blob. The `source.` segment disambiguates a source entry from a static key
- * like `identity.predictedAt` — without it, a source literally named
+ * Storage: each source (e.g. a live prediction run against one contactome
+ * reference dataset or one nuclear-position embryo/timepoint, or a
+ * separately-uploaded offline-prediction CSV) gets its OWN metadata entry —
+ * `identity.source.<source>` — holding just that source's candidates as a
+ * JSON array of [name, score] tuples (not {name, score} objects — more
+ * compact), sorted by score descending. This is what shows up in WK's native
+ * per-tree metadata table (Trees panel), so keeping one entry per source,
+ * pre-sorted and tuple-encoded, makes the raw value directly readable there
+ * instead of one big merged, unsorted, verbose JSON blob. The `source.`
+ * segment disambiguates a source entry from a static key like
+ * `identity.predictedAt` — without it, a source literally named
  * "predictedAt" would be indistinguishable from the static key, and any new
  * static key added later risks colliding with an existing source name. A
  * later run from the same source overwrites only its own entry; other
  * sources' entries are untouched.
  */
 import type { MetadataEntryProto } from "types/api_types";
-import type { Segment } from "viewer/store";
+import type { Tree } from "viewer/model/types/tree_types";
 
 const CANDIDATES_KEY_PREFIX = "identity.source.";
 
@@ -39,11 +40,11 @@ export type CandidateScores = {
 
 export type IdentityStatus = "predicted" | "confirmed" | "none";
 
-export type SegmentIdentity = {
+export type TreeIdentity = {
   candidates: CandidateScores[];
   confirmed: string | null;
   predictedAt: number | null;
-  /** Marked "not a neuron" — excluded from live Run's prediction targets and hidden from Proofread IDs by default. */
+  /** Marked "not a real cell" — excluded from live Run's prediction targets and hidden from Proofread IDs by default. */
   ignored: boolean;
 };
 
@@ -88,9 +89,9 @@ function parseSourceCandidates(encoded: string | undefined): { name: string; sco
   }
 }
 
-/** Derive the typed identity view-model from a segment's raw metadata. */
-export function getSegmentIdentity(segment: Segment): SegmentIdentity {
-  const metadata = segment.metadata ?? [];
+/** Derive the typed identity view-model from a tree's raw metadata. */
+export function getTreeIdentity(tree: Tree): TreeIdentity {
+  const metadata = tree.metadata ?? [];
   const byName = new Map<string, CandidateScores>();
   for (const entry of metadata) {
     const source = sourceFromCandidatesKey(entry.key);
@@ -111,18 +112,18 @@ export function getSegmentIdentity(segment: Segment): SegmentIdentity {
   };
 }
 
-/** Overall status for a segment, derived from its identity (used for filtering/tagging). */
-export function getIdentityStatus(identity: SegmentIdentity): IdentityStatus {
+/** Overall status for a tree, derived from its identity (used for filtering/tagging). */
+export function getIdentityStatus(identity: TreeIdentity): IdentityStatus {
   if (identity.confirmed != null) {
     return "confirmed";
   }
   return identity.candidates.length > 0 ? "predicted" : "none";
 }
 
-/** Whether a segment carries any identity metadata at all. */
-export function hasIdentityMetadata(segment: Segment): boolean {
+/** Whether a tree carries any identity metadata at all. */
+export function hasIdentityMetadata(tree: Tree): boolean {
   const staticKeys = Object.values(IdentityMetadataKeys) as string[];
-  return (segment.metadata ?? []).some(
+  return (tree.metadata ?? []).some(
     (entry) => staticKeys.includes(entry.key) || sourceFromCandidatesKey(entry.key) != null,
   );
 }
@@ -137,7 +138,7 @@ function upsertEntry(
 
 /**
  * Return a new metadata array with the given name marked as confirmed. The
- * caller is expected to also set the segment's canonical `name` to `name`.
+ * caller is expected to also set the tree's canonical `name` to `name`.
  */
 export function withConfirmedIdentity(
   metadata: MetadataEntryProto[],
@@ -151,7 +152,7 @@ export function withUnconfirmedIdentity(metadata: MetadataEntryProto[]): Metadat
   return metadata.filter((entry) => entry.key !== IdentityMetadataKeys.confirmed);
 }
 
-/** Mark a segment "not a neuron" / ignored — excluded from live Run's targets and hidden by default. */
+/** Mark a tree "not a real cell" / ignored — excluded from live Run's targets and hidden by default. */
 export function withIgnored(metadata: MetadataEntryProto[]): MetadataEntryProto[] {
   return upsertEntry(metadata, { key: IdentityMetadataKeys.ignored, boolValue: true });
 }

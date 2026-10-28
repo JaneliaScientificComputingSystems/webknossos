@@ -20,30 +20,23 @@ import {
   Tooltip,
   Typography,
 } from "antd";
-import { V4 } from "libs/mjs";
 import { useWkSelector } from "libs/react_hooks";
 import Toast from "libs/toast";
 import { type MouseEvent, memo, useCallback, useMemo, useState } from "react";
 import { useDispatch } from "react-redux";
-import type { Vector4 } from "viewer/constants";
-import { mayEditAnnotation } from "viewer/model/accessors/annotation_accessor";
-import { getVisibleSegmentationLayer } from "viewer/model/accessors/dataset_accessor";
-import { layerToGlobalTransformedPosition } from "viewer/model/accessors/dataset_layer_transformation_accessor";
-import {
-  getSegmentColorAsRGBA,
-  getSelectedIds,
-  getVisibleSegments,
-} from "viewer/model/accessors/volumetracing_accessor";
+import { getTransformsForSkeletonLayer } from "viewer/model/accessors/dataset_layer_transformation_accessor";
+import { getSkeletonTracing } from "viewer/model/accessors/skeletontracing_accessor";
 import {
   setAdditionalCoordinatesAction,
   setPositionAction,
 } from "viewer/model/actions/flycam_actions";
 import {
-  setSelectedSegmentsOrGroupAction,
-  updateSegmentAction,
-} from "viewer/model/actions/volumetracing_actions";
-import { rgbaToCSS } from "viewer/shaders/utils.glsl";
-import type { Segment } from "viewer/store";
+  setActiveTreeAction,
+  setTreeMetadataAction,
+  setTreeNameAction,
+} from "viewer/model/actions/skeletontracing_actions";
+import { transformPointUnscaled } from "viewer/model/helpers/transformation_helpers";
+import type { Tree } from "viewer/model/types/tree_types";
 import Store from "viewer/store";
 import { getContextMenuPositionFromEvent } from "viewer/view/context_menu/helpers";
 import { getNeuronDiagramUrl } from "viewer/view/right_border_tabs/predictions_tab/prediction_client";
@@ -52,13 +45,14 @@ import {
   usePredictionConfiguration,
 } from "viewer/view/right_border_tabs/predictions_tab/prediction_configuration_context";
 import PredictionsView from "viewer/view/right_border_tabs/predictions_tab/predictions_view";
+import { ColoredDotIcon } from "viewer/view/right_border_tabs/shared/colored_dot_icon";
 import { ContextMenuContainer } from "viewer/view/right_border_tabs/sidebar_context_menu";
 import {
   type CandidateScores,
   getIdentityStatus,
-  getSegmentIdentity,
+  getTreeIdentity,
   type IdentityStatus,
-  type SegmentIdentity,
+  type TreeIdentity,
   withConfirmedIdentity,
   withIgnored,
   withUnconfirmedIdentity,
@@ -72,8 +66,8 @@ const { Text } = Typography;
 type SortKey = "confidence" | "id";
 
 type IdentityRow = {
-  segment: Segment;
-  identity: SegmentIdentity;
+  tree: Tree;
+  identity: TreeIdentity;
   status: IdentityStatus;
 };
 
@@ -138,7 +132,7 @@ function colorForName(name: string): { background: string; color: string } {
   };
 }
 
-/** All sources with a score for ANY candidate of this segment — the denominator for averageScore. */
+/** All sources with a score for ANY candidate of this tree — the denominator for averageScore. */
 function allSourcesFor(candidates: CandidateScores[]): string[] {
   const sources = new Set<string>();
   for (const candidate of candidates) {
@@ -149,7 +143,7 @@ function allSourcesFor(candidates: CandidateScores[]): string[] {
   return Array.from(sources);
 }
 
-/** Average of this candidate's score across every source present for the segment, missing = 0. */
+/** Average of this candidate's score across every source present for the tree, missing = 0. */
 function averageScore(candidate: CandidateScores, sources: string[]): number {
   if (sources.length === 0) {
     return Number.NEGATIVE_INFINITY;
@@ -186,14 +180,14 @@ function averageCandidateRanking(candidates: CandidateScores[]): { name: string;
     .sort((a, b) => b.score - a.score);
 }
 
-/** This segment's best candidate's cross-source average score (missing source = 0), for sorting with no name query. */
-function topCandidateAverageScore(identity: SegmentIdentity): number {
+/** This tree's best candidate's cross-source average score (missing source = 0), for sorting with no name query. */
+function topCandidateAverageScore(identity: TreeIdentity): number {
   const top = averageCandidateRanking(identity.candidates)[0];
   return top != null ? top.score : Number.NEGATIVE_INFINITY;
 }
 
-/** This segment's cross-source average score for ONE specific name, or -Infinity if it's not a candidate at all. */
-function averageScoreForName(identity: SegmentIdentity, name: string): number {
+/** This tree's cross-source average score for ONE specific name, or -Infinity if it's not a candidate at all. */
+function averageScoreForName(identity: TreeIdentity, name: string): number {
   const candidate = identity.candidates.find((c) => c.name === name);
   if (candidate == null) {
     return Number.NEGATIVE_INFINITY;
@@ -246,27 +240,23 @@ const IdentityListItem = memo(function IdentityListItem({
   isActive: boolean;
   /** A candidate name to visually call out in this row, e.g. the query in Search by Name. */
   highlightName?: string;
-  /** Every name currently confirmed on ANY segment — a candidate tag whose name is in here but isn't THIS row's own confirmed name is greyed out/disabled (already taken elsewhere). */
+  /** Every name currently confirmed on ANY tree — a candidate tag whose name is in here but isn't THIS row's own confirmed name is greyed out/disabled (already taken elsewhere). */
   confirmedNames: Set<string>;
   /** Names excluded via "Exclude name" (ID Prediction's ignored-names list) — greyed out/disabled, same treatment as confirmed-elsewhere. */
   ignoredNameSet: Set<string>;
-  onGoTo: (segment: Segment) => void;
-  onConfirm: (segment: Segment, name: string) => void;
-  onUnconfirm: (segment: Segment) => void;
+  onGoTo: (tree: Tree) => void;
+  onConfirm: (tree: Tree, name: string) => void;
+  onUnconfirm: (tree: Tree) => void;
   /** Right-click on a candidate tag: "Search by name" / "Exclude name" menu. */
   onTagContextMenu: (event: MouseEvent<HTMLElement>, row: IdentityRow, name: string) => void;
-  /** Right-click on the row outside a tag: "Ignore segment" menu. */
+  /** Right-click on the row outside a tag: "Ignore tree" menu. */
   onRowContextMenu: (event: MouseEvent<HTMLDivElement>, row: IdentityRow) => void;
 }) {
-  const { segment, identity, status } = row;
-  const segmentColorRGBA = useWkSelector(
-    (state) => getSegmentColorAsRGBA(state, segment.id),
-    (a: Vector4, b: Vector4) => V4.isEqual(a, b),
-  );
-  // Deliberately NOT falling back to segment.name here: that's WK's native
-  // per-segment name field, set independently of our identity-confirmation
-  // system (e.g. leftover from before free-text editing was removed from
-  // this row) — showing it would let the name field disagree with the
+  const { tree, identity, status } = row;
+  const firstNode = tree.nodes.values().next().value;
+  // Deliberately NOT falling back to tree.name here: that's WK's native
+  // per-tree name field, set independently of our identity-confirmation
+  // system — showing it would let the name field disagree with the
   // status tag (e.g. "unlabeled" but a name still showing).
   const displayName = identity.confirmed;
   const sourceGroups = groupCandidatesBySource(identity.candidates);
@@ -277,7 +267,7 @@ const IdentityListItem = memo(function IdentityListItem({
 
   const renderCandidateTag = (name: string, score: number) => {
     const isConfirmed = identity.confirmed === name;
-    // Taken by a DIFFERENT segment — the duplicate-name guard in
+    // Taken by a DIFFERENT tree — the duplicate-name guard in
     // handleConfirm already prevents confirming it here, so grey it out and
     // disable interaction rather than let the click just silently fail.
     const isConfirmedElsewhere = !isConfirmed && confirmedNames.has(name);
@@ -293,7 +283,7 @@ const IdentityListItem = memo(function IdentityListItem({
         key={name}
         title={
           isConfirmedElsewhere
-            ? "Already confirmed on a different segment"
+            ? "Already confirmed on a different tree"
             : isExcluded
               ? "Excluded from matching"
               : allowUpdate
@@ -339,9 +329,9 @@ const IdentityListItem = memo(function IdentityListItem({
                   // row div's own onClick, which selects and navigates.
                   event.stopPropagation();
                   if (isConfirmed) {
-                    onUnconfirm(segment);
+                    onUnconfirm(tree);
                   } else {
-                    onConfirm(segment, name);
+                    onConfirm(tree, name);
                   }
                 }
               : undefined
@@ -362,7 +352,7 @@ const IdentityListItem = memo(function IdentityListItem({
 
   return (
     <div
-      onClick={() => onGoTo(segment)}
+      onClick={() => onGoTo(tree)}
       onContextMenu={(event) => onRowContextMenu(event, row)}
       style={{
         borderBottom: "1px solid var(--color-wk-border, rgba(128,128,128,0.2))",
@@ -373,25 +363,13 @@ const IdentityListItem = memo(function IdentityListItem({
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span
-          style={{
-            width: 12,
-            height: 12,
-            borderRadius: 2,
-            background: rgbaToCSS(segmentColorRGBA),
-            flex: "0 0 auto",
-          }}
-        />
+        <ColoredDotIcon colorRGBA={[...tree.color, 1.0]} />
         <Tooltip
-          title={
-            segment.anchorPosition != null
-              ? "Go to segment"
-              : "Position unknown — cannot go to this segment yet"
-          }
+          title={firstNode != null ? "Go to tree" : "Position unknown — this tree has no node yet"}
         >
-          <AimOutlined style={{ opacity: segment.anchorPosition == null ? 0.3 : 1 }} />
+          <AimOutlined style={{ opacity: firstNode == null ? 0.3 : 1 }} />
         </Tooltip>
-        <Text style={{ fontVariantNumeric: "tabular-nums" }}>#{segment.id}</Text>
+        <Text style={{ fontVariantNumeric: "tabular-nums" }}>#{tree.treeId}</Text>
         <Text strong ellipsis style={{ flex: 1 }}>
           {displayName ?? <Text>unnamed</Text>}
         </Text>
@@ -472,15 +450,15 @@ const IdentityListItem = memo(function IdentityListItem({
 
 /**
  * The reverse lookup of the main Proofreading list: instead of "for this
- * segment, which names might it be", this answers "for this NAME, which
- * segments might it be" — ranking every segment in the list by its
- * cross-source average score for exactly the typed name (segments where
+ * tree, which names might it be", this answers "for this NAME, which
+ * trees might it be" — ranking every tree in the list by its
+ * cross-source average score for exactly the typed name (trees where
  * that name isn't a candidate at all sort last, via -Infinity).
  */
 const SearchByNameView = memo(function SearchByNameView({
   allRows,
   allowUpdate,
-  activeCellId,
+  activeTreeId,
   query,
   onQueryChange,
   ignoredNames,
@@ -496,40 +474,40 @@ const SearchByNameView = memo(function SearchByNameView({
 }: {
   allRows: IdentityRow[];
   allowUpdate: boolean;
-  activeCellId: bigint | undefined;
+  activeTreeId: number | null | undefined;
   query: string;
   onQueryChange: (query: string) => void;
   /** Names excluded from autocomplete suggestions (see ID Prediction's ignored-names list). */
   ignoredNames: string[];
-  /** Every name currently confirmed on ANY segment. */
+  /** Every name currently confirmed on ANY tree. */
   confirmedNames: Set<string>;
-  /** Every source seen across all segments' candidates — the "Matching scores" checkbox list's population. */
+  /** Every source seen across all trees' candidates — the "Matching scores" checkbox list's population. */
   allSources: string[];
   /** Sources unchecked in "Matching scores" — excluded from display and the cross-source average panel-wide. */
   disabledSources: Set<string>;
   onToggleSource: (source: string, enabled: boolean) => void;
-  onGoTo: (segment: Segment) => void;
-  onConfirm: (segment: Segment, name: string) => void;
-  onUnconfirm: (segment: Segment) => void;
+  onGoTo: (tree: Tree) => void;
+  onConfirm: (tree: Tree, name: string) => void;
+  onUnconfirm: (tree: Tree) => void;
   onTagContextMenu: (event: MouseEvent<HTMLElement>, row: IdentityRow, name: string) => void;
   onRowContextMenu: (event: MouseEvent<HTMLDivElement>, row: IdentityRow) => void;
 }) {
-  // By default ("Exclude confirmed neurons" checked), a segment already
+  // By default ("Exclude confirmed neurons" checked), a tree already
   // confirmed as a DIFFERENT name is excluded from both the results list and
   // the autocomplete's suggestions — it can't be confirmed as the searched
   // name anyway (see the duplicate-name guard in handleConfirm), so
   // surfacing it as a "match" or suggesting its name is just noise.
   // Unchecking is the escape hatch for the rare case of wanting to
-  // reconsider/reassign an already-confirmed segment.
+  // reconsider/reassign an already-confirmed tree.
   const [includeConfirmedElsewhere, setIncludeConfirmedElsewhere] = useState(false);
-  // Segments marked "ignore (not a neuron)" are hidden from results by
+  // Trees marked "ignore (not a real cell)" are hidden from results by
   // default — they're excluded from matching entirely, so surfacing them
   // here is just clutter. Unchecking is the escape hatch for the rare case
   // of wanting to review/un-ignore one.
   const [includeIgnored, setIncludeIgnored] = useState(false);
-  // Off by default: when on, only segments with a score from EVERY enabled
+  // Off by default: when on, only trees with a score from EVERY enabled
   // "Matching scores" source (on at least one candidate) are shown — useful
-  // for comparing sources apples-to-apples instead of segments where most
+  // for comparing sources apples-to-apples instead of trees where most
   // sources simply never ran.
   const [requireAllEnabledSources, setRequireAllEnabledSources] = useState(false);
   // Collapsed by default to save vertical space — these are occasional-use
@@ -605,7 +583,7 @@ const SearchByNameView = memo(function SearchByNameView({
         );
       }
       if (sortBy === "id") {
-        return a.segment.id < b.segment.id ? -1 : a.segment.id > b.segment.id ? 1 : 0;
+        return a.tree.treeId - b.tree.treeId;
       }
       // "confidence"
       return topCandidateAverageScore(b.identity) - topCandidateAverageScore(a.identity);
@@ -638,7 +616,7 @@ const SearchByNameView = memo(function SearchByNameView({
             style={{ width: 110 }}
             options={[
               { label: "Confidence", value: "confidence" },
-              { label: "Segment ID", value: "id" },
+              { label: "Tree ID", value: "id" },
             ]}
           />
           <Text style={{ fontSize: 12, flex: "0 0 auto" }}>Search by name:</Text>
@@ -721,7 +699,7 @@ const SearchByNameView = memo(function SearchByNameView({
               onChange={(event) => setIncludeIgnored(!event.target.checked)}
               style={{ marginTop: 4, marginInlineStart: 0, fontSize: 12 }}
             >
-              Exclude ignored segments
+              Exclude ignored trees
             </Checkbox>
             {enabledSources.length > 1 && (
               <Checkbox
@@ -729,7 +707,7 @@ const SearchByNameView = memo(function SearchByNameView({
                 onChange={(event) => setRequireAllEnabledSources(event.target.checked)}
                 style={{ marginTop: 4, marginInlineStart: 0, fontSize: 12 }}
               >
-                Exclude segments missing scores
+                Exclude trees missing scores
               </Checkbox>
             )}
           </>
@@ -742,18 +720,18 @@ const SearchByNameView = memo(function SearchByNameView({
             image={Empty.PRESENTED_IMAGE_SIMPLE}
             description={
               trimmedQuery.length > 0
-                ? `No segment has "${trimmedQuery}" as a candidate.`
-                : "No segments match these filters."
+                ? `No tree has "${trimmedQuery}" as a candidate.`
+                : "No trees match these filters."
             }
             style={{ marginTop: 40 }}
           />
         ) : (
           matches.map((row) => (
             <IdentityListItem
-              key={row.segment.id}
+              key={row.tree.treeId}
               row={row}
               allowUpdate={allowUpdate}
-              isActive={activeCellId === row.segment.id}
+              isActive={activeTreeId === row.tree.treeId}
               highlightName={trimmedQuery.length > 0 ? trimmedQuery : undefined}
               confirmedNames={confirmedNames}
               ignoredNameSet={ignoredNameSet}
@@ -771,18 +749,16 @@ const SearchByNameView = memo(function SearchByNameView({
 });
 
 /**
- * Shows exactly one segment: whichever was most recently clicked, either as
- * a voxel in the 2D/3D data viewport or as a row in WK's native Segments
- * panel list — both funnel into the same `selectedIds` store state (see
- * updateClickedSegments in volumetracing_saga.tsx), unlike `activeCellId`,
- * which only visually highlights in Proofreading-tool mode. A multi-select
- * (shift/ctrl-click in the Segments panel) still resolves to "the first of
- * the selection", rather than showing nothing or all of them.
+ * Shows exactly one tree: whichever is currently active (`activeTreeId`,
+ * `localSkeletonState`) — clicking a tree in the viewport or Trees panel
+ * already sets this, so it's the natural, already-idiomatic "current tree"
+ * concept for this feature, unlike segments (which needed a separate
+ * `selectedIds` store slice).
  */
-const CurrentSegmentView = memo(function CurrentSegmentView({
+const CurrentTreeView = memo(function CurrentTreeView({
   allRows,
   allowUpdate,
-  selectedSegmentId,
+  activeTreeId,
   confirmedNames,
   ignoredNameSet,
   onGoTo,
@@ -793,71 +769,67 @@ const CurrentSegmentView = memo(function CurrentSegmentView({
 }: {
   allRows: IdentityRow[];
   allowUpdate: boolean;
-  selectedSegmentId: bigint | undefined;
-  /** Every name currently confirmed on ANY segment. */
+  activeTreeId: number | null | undefined;
+  /** Every name currently confirmed on ANY tree. */
   confirmedNames: Set<string>;
   /** Names excluded via "Exclude name" (ID Prediction's ignored-names list). */
   ignoredNameSet: Set<string>;
-  onGoTo: (segment: Segment) => void;
-  onConfirm: (segment: Segment, name: string) => void;
-  onUnconfirm: (segment: Segment) => void;
+  onGoTo: (tree: Tree) => void;
+  onConfirm: (tree: Tree, name: string) => void;
+  onUnconfirm: (tree: Tree) => void;
   onTagContextMenu: (event: MouseEvent<HTMLElement>, row: IdentityRow, name: string) => void;
   onRowContextMenu: (event: MouseEvent<HTMLDivElement>, row: IdentityRow) => void;
 }) {
-  const [segmentIdQuery, setSegmentIdQuery] = useState("");
+  const [treeIdQuery, setTreeIdQuery] = useState("");
 
-  const knownSegmentIds = useMemo(
-    () => allRows.map((row) => row.segment.id.toString()).sort(),
+  const knownTreeIds = useMemo(
+    () => allRows.map((row) => row.tree.treeId.toString()).sort(),
     [allRows],
   );
 
-  const segmentIdOptions = useMemo(() => {
-    const trimmed = segmentIdQuery.trim();
+  const treeIdOptions = useMemo(() => {
+    const trimmed = treeIdQuery.trim();
     const filtered =
-      trimmed.length === 0
-        ? knownSegmentIds
-        : knownSegmentIds.filter((id) => id.startsWith(trimmed));
+      trimmed.length === 0 ? knownTreeIds : knownTreeIds.filter((id) => id.startsWith(trimmed));
     return filtered.map((id) => ({ value: id }));
-  }, [knownSegmentIds, segmentIdQuery]);
+  }, [knownTreeIds, treeIdQuery]);
 
-  // Typing a segment ID here SELECTS it — same setSelectedSegmentsOrGroupAction
-  // dispatch as clicking it in the viewport/panel (via onGoTo) — rather than
-  // just locally overriding what this view displays. That keeps "current
-  // segment" meaning one single thing everywhere (the shared selectedIds
-  // store state), instead of this box silently diverging from it.
-  const handleSegmentIdChange = (value: string) => {
-    setSegmentIdQuery(value);
+  // Typing a tree ID here SELECTS it — same setActiveTreeAction dispatch as
+  // clicking it in the viewport/panel (via onGoTo) — rather than just
+  // locally overriding what this view displays. That keeps "current tree"
+  // meaning one single thing everywhere (the shared activeTreeId store
+  // state), instead of this box silently diverging from it.
+  const handleTreeIdChange = (value: string) => {
+    setTreeIdQuery(value);
     const trimmed = value.trim();
     if (!/^\d+$/.test(trimmed)) {
       return;
     }
-    const segmentId = BigInt(trimmed);
-    const matchingRow = allRows.find((row) => row.segment.id === segmentId);
+    const treeId = Number.parseInt(trimmed, 10);
+    const matchingRow = allRows.find((row) => row.tree.treeId === treeId);
     if (matchingRow != null) {
-      onGoTo(matchingRow.segment);
+      onGoTo(matchingRow.tree);
     }
   };
 
   const currentRow =
-    selectedSegmentId != null
-      ? allRows.find((row) => row.segment.id === selectedSegmentId)
-      : undefined;
+    activeTreeId != null ? allRows.find((row) => row.tree.treeId === activeTreeId) : undefined;
 
   return (
     <div>
       <AutoComplete
-        value={segmentIdQuery}
-        onChange={handleSegmentIdChange}
-        options={segmentIdOptions}
+        value={treeIdQuery}
+        onChange={handleTreeIdChange}
+        options={treeIdOptions}
         filterOption={false}
         size="small"
-        placeholder="Select segment by ID…"
+        placeholder="Select tree by ID…"
         style={{ width: "100%", marginBottom: 8 }}
       />
       {currentRow == null ? (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description="Click a segment in the data viewport or the Segments panel, or enter its ID above."
+          description="Click a tree in the data viewport or the Trees panel, or enter its ID above."
           style={{ marginTop: 40 }}
         />
       ) : (
@@ -891,11 +863,11 @@ function NeuronIdentityPanel() {
   const [contextMenuPosition, setContextMenuPosition] = useState<[number, number] | null>(null);
   const [contextMenu, setContextMenu] = useState<MenuProps | null>(null);
   const [subTab, setSubTab] = useState<"predictions" | "searchByName">("searchByName");
-  // The segment currently being named via the row context menu's "Assign
+  // The tree currently being named via the row context menu's "Assign
   // name…" modal — a typed free-text entry point for names that aren't among
-  // a segment's predicted candidates, distinct from confirming an existing
+  // a tree's predicted candidates, distinct from confirming an existing
   // candidate tag.
-  const [assigningSegment, setAssigningSegment] = useState<Segment | null>(null);
+  const [assigningTree, setAssigningTree] = useState<Tree | null>(null);
   const [assignNameInput, setAssignNameInput] = useState("");
   // Search by Name's query, lifted here so clicking a candidate tag anywhere
   // (including the main Proofreading list) can populate it and jump to that
@@ -903,9 +875,9 @@ function NeuronIdentityPanel() {
   const [searchByNameQuery, setSearchByNameQuery] = useState("");
   // Which candidate name's reference diagram to show in the "Neuron diagram"
   // section — set via a candidate tag's right-click menu ("View diagram") or
-  // by searching by name below, not tied to the current segment selection,
+  // by searching by name below, not tied to the current tree selection,
   // so it stays put while the user clicks around comparing candidates across
-  // segments.
+  // trees.
   const [diagramName, setDiagramName] = useState<string | null>(null);
   const [isDiagramExpanded, setIsDiagramExpanded] = useState(true);
   const handleSearchName = useCallback((name: string) => {
@@ -934,43 +906,33 @@ function NeuronIdentityPanel() {
   // user unchecks one, so newly-seen sources start enabled rather than
   // silently excluded.
   const [disabledSources, setDisabledSources] = useState<Set<string>>(new Set());
-  const [isCurrentSegmentExpanded, setIsCurrentSegmentExpanded] = useState(true);
+  const [isCurrentTreeExpanded, setIsCurrentTreeExpanded] = useState(true);
   const [isConfirmedIdsExpanded, setIsConfirmedIdsExpanded] = useState(true);
 
-  const visibleSegmentationLayer = useWkSelector(getVisibleSegmentationLayer);
-  const segments = useWkSelector((state) => getVisibleSegments(state).segments);
-  // Mirror the Segments tab: editing is allowed unless a visible-but-untracable
-  // segmentation layer (a dataset layer, tracingId == null) is active.
+  const skeletonTracing = useWkSelector((state) => getSkeletonTracing(state.annotation));
+  const trees = skeletonTracing?.trees;
+  // Mirror the Segments tab: editing is allowed whenever the annotation
+  // itself may be edited — unlike segments, skeleton trees have no
+  // visible-but-untracable-layer concept to additionally guard against.
   const allowUpdate = useWkSelector(
     (state) =>
-      mayEditAnnotation(state) &&
-      !(visibleSegmentationLayer != null && visibleSegmentationLayer.tracingId == null),
+      state.annotation.skeleton != null &&
+      state.annotation.restrictions.allowUpdate &&
+      !state.annotation.isLockedByOwner,
   );
-  const activeCellId = useWkSelector((state) => {
-    const layer = getVisibleSegmentationLayer(state);
-    if (layer?.tracingId == null) {
-      return undefined;
-    }
-    return state.annotation.volumes.find((volume) => volume.tracingId === layer.tracingId)
-      ?.activeCellId;
-  });
-  // The segment most recently clicked, either as a voxel in the data
-  // viewport or as a row in the Segments panel — both update this same
-  // state (see CurrentSegmentView's doc comment). A multi-select resolves to
-  // its first entry.
-  const selectedSegmentId = useWkSelector((state) => getSelectedIds(state).segments[0]);
+  const activeTreeId = useWkSelector((state) => state.localSkeletonState.activeTreeId);
 
   const unfilteredRows = useMemo<IdentityRow[]>(() => {
-    if (segments == null) {
+    if (trees == null) {
       return [];
     }
-    return Array.from(segments.values()).map((segment) => {
-      const identity = getSegmentIdentity(segment);
-      return { segment, identity, status: getIdentityStatus(identity) };
+    return Array.from(trees.values()).map((tree) => {
+      const identity = getTreeIdentity(tree);
+      return { tree, identity, status: getIdentityStatus(identity) };
     });
-  }, [segments]);
+  }, [trees]);
 
-  // Every source seen across all segments' candidates — the "Matching
+  // Every source seen across all trees' candidates — the "Matching
   // scores" checkbox list's population. Derived from the unfiltered rows so
   // a source doesn't disappear from the list just because the user disabled
   // it (which would make it impossible to re-enable).
@@ -1001,7 +963,7 @@ function NeuronIdentityPanel() {
   // Disabled sources are stripped out of each candidate's scoresBySource
   // (and a candidate left with no remaining source is dropped entirely) here
   // — once, at the top of the panel — so every consumer downstream (Current
-  // Segment, Search by Name, Confirmed IDs, the context menu) automatically
+  // Tree, Search by Name, Confirmed IDs, the context menu) automatically
   // sees only enabled sources without re-deriving this filter itself.
   const allRows = useMemo<IdentityRow[]>(() => {
     if (disabledSources.size === 0) {
@@ -1084,15 +1046,15 @@ function NeuronIdentityPanel() {
     () => allRows.filter((row) => row.identity.ignored).length,
     [allRows],
   );
-  // Non-ignored segments still without a confirmed name — the gap between
+  // Non-ignored trees still without a confirmed name — the gap between
   // confirmedCount and the (ignored-excluded) denominator shown in the title.
-  const unnamedSegmentCount = useMemo(
+  const unnamedTreeCount = useMemo(
     () => allRows.filter((row) => !row.identity.ignored && row.identity.confirmed == null).length,
     [allRows],
   );
   // Candidate names surfaced by predictions/offline-CSVs for at least one
-  // non-ignored segment, but not yet confirmed on ANY segment — distinct from
-  // unnamedSegmentCount, which counts segments, not names.
+  // non-ignored tree, but not yet confirmed on ANY tree — distinct from
+  // unnamedTreeCount, which counts trees, not names.
   const unassignedNameCount = useMemo(() => {
     const confirmedNames = new Set<string>();
     const candidateNames = new Set<string>();
@@ -1119,94 +1081,65 @@ function NeuronIdentityPanel() {
   }, [allRows, ignoredNames]);
 
   const handleConfirm = useCallback(
-    (segment: Segment, name: string) => {
-      if (visibleSegmentationLayer == null) {
-        return;
-      }
+    (tree: Tree, name: string) => {
       const conflictingRow = allRows.find(
-        (row) => row.segment.id !== segment.id && row.identity.confirmed === name,
+        (row) => row.tree.treeId !== tree.treeId && row.identity.confirmed === name,
       );
       if (conflictingRow != null) {
         Toast.error(
-          `"${name}" is already confirmed on segment #${conflictingRow.segment.id} — clear that confirmation first if you want to reassign it.`,
+          `"${name}" is already confirmed on tree #${conflictingRow.tree.treeId} — clear that confirmation first if you want to reassign it.`,
         );
         return;
       }
+      dispatch(setTreeNameAction(name, tree.treeId));
       dispatch(
-        updateSegmentAction(
-          segment.id,
-          { name, metadata: withConfirmedIdentity(segment.metadata ?? [], name) },
-          visibleSegmentationLayer.name,
-          undefined,
-          true,
-        ),
+        setTreeMetadataAction(withConfirmedIdentity(tree.metadata ?? [], name), tree.treeId),
       );
     },
-    [visibleSegmentationLayer, allRows, dispatch],
+    [allRows, dispatch],
   );
 
   const handleGoTo = useCallback(
-    (segment: Segment) => {
-      if (visibleSegmentationLayer == null) {
+    (tree: Tree) => {
+      dispatch(setActiveTreeAction(tree.treeId));
+      const firstNode = tree.nodes.values().next().value;
+      if (firstNode == null) {
+        Toast.info("Cannot go to this tree, because it has no node yet.");
         return;
       }
-      dispatch(setSelectedSegmentsOrGroupAction([segment.id], null, visibleSegmentationLayer.name));
-      if (!segment.anchorPosition) {
-        Toast.info(
-          "Cannot go to this segment, because its position is unknown. Check the cache button in Configuration and reload the window to get locations for all segments in the view.",
-        );
-        return;
-      }
-      const transformedPosition = layerToGlobalTransformedPosition(
-        segment.anchorPosition,
-        visibleSegmentationLayer.name,
-        "segmentation",
-        Store.getState(),
+      const state = Store.getState();
+      const currentTransforms = getTransformsForSkeletonLayer(
+        state.dataset,
+        state.datasetConfiguration.nativelyRenderedLayerName,
+      );
+      const transformedPosition = transformPointUnscaled(currentTransforms)(
+        firstNode.untransformedPosition,
       );
       dispatch(setPositionAction(transformedPosition));
-      if (segment.additionalCoordinates != null) {
-        dispatch(setAdditionalCoordinatesAction(segment.additionalCoordinates));
+      if (firstNode.additionalCoordinates != null) {
+        dispatch(setAdditionalCoordinatesAction(firstNode.additionalCoordinates));
       }
     },
-    [visibleSegmentationLayer, dispatch],
+    [dispatch],
   );
 
   const handleResetDecision = useCallback(
-    (segment: Segment) => {
-      if (visibleSegmentationLayer == null) {
-        return;
-      }
-      dispatch(
-        updateSegmentAction(
-          segment.id,
-          { metadata: withUnconfirmedIdentity(segment.metadata ?? []) },
-          visibleSegmentationLayer.name,
-          undefined,
-          true,
-        ),
-      );
+    (tree: Tree) => {
+      dispatch(setTreeMetadataAction(withUnconfirmedIdentity(tree.metadata ?? []), tree.treeId));
     },
-    [visibleSegmentationLayer, dispatch],
+    [dispatch],
   );
 
   const handleToggleIgnored = useCallback(
-    (segment: Segment, ignored: boolean) => {
-      if (visibleSegmentationLayer == null) {
-        return;
-      }
+    (tree: Tree, ignored: boolean) => {
       dispatch(
-        updateSegmentAction(
-          segment.id,
-          {
-            metadata: (ignored ? withIgnored : withUnignored)(segment.metadata ?? []),
-          },
-          visibleSegmentationLayer.name,
-          undefined,
-          true,
+        setTreeMetadataAction(
+          (ignored ? withIgnored : withUnignored)(tree.metadata ?? []),
+          tree.treeId,
         ),
       );
     },
-    [visibleSegmentationLayer, dispatch],
+    [dispatch],
   );
 
   const hideContextMenu = useCallback(() => {
@@ -1228,7 +1161,7 @@ function NeuronIdentityPanel() {
   // remove moved to the tag-level interactions below (or were dropped).
   const buildRowContextMenu = useCallback(
     (row: IdentityRow): MenuProps => {
-      const { segment, identity } = row;
+      const { tree, identity } = row;
       const withHide = (fn: () => void) => () => {
         hideContextMenu();
         fn();
@@ -1240,15 +1173,15 @@ function NeuronIdentityPanel() {
             label: "Assign name…",
             disabled: !allowUpdate,
             onClick: withHide(() => {
-              setAssigningSegment(segment);
+              setAssigningTree(tree);
               setAssignNameInput(identity.confirmed ?? "");
             }),
           },
           {
             key: "toggleIgnored",
-            label: identity.ignored ? "Un-ignore segment" : "Ignore segment (not a neuron)",
+            label: identity.ignored ? "Un-ignore tree" : "Ignore tree (not a real cell)",
             disabled: !allowUpdate,
-            onClick: withHide(() => handleToggleIgnored(segment, !identity.ignored)),
+            onClick: withHide(() => handleToggleIgnored(tree, !identity.ignored)),
           },
         ],
       };
@@ -1309,26 +1242,26 @@ function NeuronIdentityPanel() {
     [showContextMenuAt, buildTagContextMenu],
   );
 
-  if (visibleSegmentationLayer == null) {
+  if (skeletonTracing == null) {
     return (
       <Empty
         image={Empty.PRESENTED_IMAGE_SIMPLE}
-        description="No visible segmentation layer."
+        description="No skeleton layer in this annotation."
         style={{ marginTop: 40 }}
       />
     );
   }
 
   const handleAssignNameSubmit = () => {
-    if (assigningSegment == null) {
+    if (assigningTree == null) {
       return;
     }
     const trimmed = assignNameInput.trim();
     if (trimmed.length === 0) {
       return;
     }
-    handleConfirm(assigningSegment, trimmed);
-    setAssigningSegment(null);
+    handleConfirm(assigningTree, trimmed);
+    setAssigningTree(null);
   };
 
   return (
@@ -1342,12 +1275,10 @@ function NeuronIdentityPanel() {
 
       <Modal
         title={
-          assigningSegment != null
-            ? `Assign name to segment #${assigningSegment.id}`
-            : "Assign name"
+          assigningTree != null ? `Assign name to tree #${assigningTree.treeId}` : "Assign name"
         }
-        open={assigningSegment != null}
-        onCancel={() => setAssigningSegment(null)}
+        open={assigningTree != null}
+        onCancel={() => setAssigningTree(null)}
         onOk={handleAssignNameSubmit}
         okButtonProps={{ disabled: assignNameInput.trim().length === 0 }}
         destroyOnHidden
@@ -1372,18 +1303,18 @@ function NeuronIdentityPanel() {
           type="text"
           size="small"
           style={{ padding: 0, height: "auto", fontWeight: "bold", fontSize: 12 }}
-          icon={isCurrentSegmentExpanded ? <CaretUpOutlined /> : <CaretDownOutlined />}
+          icon={isCurrentTreeExpanded ? <CaretUpOutlined /> : <CaretDownOutlined />}
           iconPosition="end"
-          onClick={() => setIsCurrentSegmentExpanded((expanded) => !expanded)}
+          onClick={() => setIsCurrentTreeExpanded((expanded) => !expanded)}
         >
-          Current segment
+          Current tree
         </Button>
-        {isCurrentSegmentExpanded && (
+        {isCurrentTreeExpanded && (
           <div style={{ marginTop: 4 }}>
-            <CurrentSegmentView
+            <CurrentTreeView
               allRows={allRows}
               allowUpdate={allowUpdate}
-              selectedSegmentId={selectedSegmentId}
+              activeTreeId={activeTreeId}
               confirmedNames={currentConfirmedNames}
               ignoredNameSet={ignoredNameSet}
               onGoTo={handleGoTo}
@@ -1451,7 +1382,7 @@ function NeuronIdentityPanel() {
         <SearchByNameView
           allRows={allRows}
           allowUpdate={allowUpdate}
-          activeCellId={activeCellId}
+          activeTreeId={activeTreeId}
           query={searchByNameQuery}
           onQueryChange={handleSearchByNameQueryChange}
           ignoredNames={ignoredNames}
@@ -1547,7 +1478,7 @@ function NeuronIdentityPanel() {
                   !lastRunConfirmedNames.has(row.identity.confirmed);
                 return (
                   <Tooltip
-                    key={row.segment.id}
+                    key={row.tree.treeId}
                     title={
                       allowUpdate ? "Click to select — right-click to unconfirm" : "Click to select"
                     }
@@ -1559,17 +1490,17 @@ function NeuronIdentityPanel() {
                         background: isNewSinceLastRun ? "#52c41a" : "#b7eb8f",
                         borderColor: isNewSinceLastRun ? "#389e0d" : "#95de64",
                       }}
-                      onClick={() => handleGoTo(row.segment)}
+                      onClick={() => handleGoTo(row.tree)}
                       onContextMenu={
                         allowUpdate
                           ? (event) => {
                               event.preventDefault();
-                              handleResetDecision(row.segment);
+                              handleResetDecision(row.tree);
                             }
                           : undefined
                       }
                     >
-                      {row.identity.confirmed} (#{row.segment.id})
+                      {row.identity.confirmed} (#{row.tree.treeId})
                     </Tag>
                   </Tooltip>
                 );
@@ -1578,7 +1509,7 @@ function NeuronIdentityPanel() {
         )}
         {isConfirmedIdsExpanded && (
           <Text style={{ display: "block", fontSize: 12, marginTop: 4 }}>
-            {unnamedSegmentCount} segment{unnamedSegmentCount === 1 ? "" : "s"} unnamed,{" "}
+            {unnamedTreeCount} tree{unnamedTreeCount === 1 ? "" : "s"} unnamed,{" "}
             {unassignedNameCount} name{unassignedNameCount === 1 ? "" : "s"} unassigned
           </Text>
         )}
@@ -1586,7 +1517,7 @@ function NeuronIdentityPanel() {
           <div style={{ display: "flex", gap: 16, marginTop: 8 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <Text style={{ display: "block", fontSize: 12, fontWeight: "bold" }}>
-                Excluded Segments ({ignoredCount})
+                Excluded Trees ({ignoredCount})
               </Text>
               {ignoredCount === 0 ? (
                 <Text style={{ display: "block", fontSize: 12, marginTop: 4 }}>None.</Text>
@@ -1603,10 +1534,10 @@ function NeuronIdentityPanel() {
                 >
                   {allRows
                     .filter((row) => row.identity.ignored)
-                    .sort((a, b) => (a.segment.id < b.segment.id ? -1 : 1))
+                    .sort((a, b) => a.tree.treeId - b.tree.treeId)
                     .map((row) => (
                       <Tooltip
-                        key={row.segment.id}
+                        key={row.tree.treeId}
                         title={
                           allowUpdate
                             ? "Click to select — right-click to un-ignore"
@@ -1616,17 +1547,17 @@ function NeuronIdentityPanel() {
                         <Tag
                           color="default"
                           style={{ cursor: "pointer" }}
-                          onClick={() => handleGoTo(row.segment)}
+                          onClick={() => handleGoTo(row.tree)}
                           onContextMenu={
                             allowUpdate
                               ? (event) => {
                                   event.preventDefault();
-                                  handleToggleIgnored(row.segment, false);
+                                  handleToggleIgnored(row.tree, false);
                                 }
                               : undefined
                           }
                         >
-                          #{row.segment.id}
+                          #{row.tree.treeId}
                         </Tag>
                       </Tooltip>
                     ))}

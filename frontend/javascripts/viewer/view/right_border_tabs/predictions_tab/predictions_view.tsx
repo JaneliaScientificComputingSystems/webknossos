@@ -28,8 +28,6 @@ export default function PredictionsView() {
     selectedReferenceDatasets,
     toggleReferenceDataset,
     writeMergedCandidates,
-    segmentPositionCacheEnabled,
-    toggleSegmentPositionCache,
   } = usePredictionConfiguration();
 
   const [newIgnoredName, setNewIgnoredName] = useState("");
@@ -77,26 +75,25 @@ export default function PredictionsView() {
       // more readable than the full filename wherever the source shows up
       // (candidate tooltips, the per-source row label, raw metadata keys).
       const sourceName = file.name.replace(/\.[^./]+$/, "");
-      const { written, createdCount, positionedCount, confirmedCount, skippedConfirmCount } =
-        await writeMergedCandidates(sourceName, predictions, { autoConfirm: isSeeds });
+      const { written, confirmedCount, skippedConfirmCount, skippedMissingTreeCount } =
+        writeMergedCandidates(sourceName, predictions, { autoConfirm: isSeeds });
       if (skippedRowCount > 0) {
         Toast.info(`Skipped ${skippedRowCount} row(s) that didn't fit the expected format.`);
       }
-      const createdPart =
-        createdCount > 0 ? `, ${createdCount} newly added to the segment list` : "";
-      const positionedPart = createdCount > 0 ? `, ${positionedCount} with a known position` : "";
+      const missingPart =
+        skippedMissingTreeCount > 0
+          ? ` (${skippedMissingTreeCount} skipped — no matching tree)`
+          : "";
       if (isSeeds) {
         const skippedPart =
           skippedConfirmCount > 0
             ? ` (${skippedConfirmCount} left unconfirmed due to a conflicting name — sort by confidence to review)`
             : "";
         Toast.success(
-          `Wrote seeds to ${written} segment(s), confirmed ${confirmedCount}${skippedPart}${createdPart}${positionedPart}.`,
+          `Wrote seeds to ${written} tree(s), confirmed ${confirmedCount}${skippedPart}${missingPart}.`,
         );
       } else {
-        Toast.success(
-          `Wrote offline predictions to ${written} segment(s)${createdPart}${positionedPart}.`,
-        );
+        Toast.success(`Wrote offline predictions to ${written} tree(s)${missingPart}.`);
       }
     } catch (exception) {
       Toast.error(
@@ -113,8 +110,8 @@ export default function PredictionsView() {
         Contact profile
       </Text>
       <Text style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
-        Upload a CSV/TSV file of segment contacts to use for ID prediction. Must have a header row
-        with "neuron1", "neuron2" (segment IDs), and "contact_strength" columns.
+        Upload a CSV/TSV file of tree contacts to use for ID prediction. Must have a header row with
+        "neuron1", "neuron2" (tree IDs), and "contact_strength" columns.
       </Text>
       <Upload
         name="contactProfile"
@@ -139,7 +136,7 @@ export default function PredictionsView() {
             </Tooltip>
           </div>
           <Text style={{ display: "block", fontSize: 12 }}>
-            {contactEdges.length} contact(s) across {countDistinctNeurons(contactEdges)} neuron(s)
+            {contactEdges.length} contact(s) across {countDistinctNeurons(contactEdges)} tree(s)
           </Text>
         </>
       )}
@@ -176,20 +173,6 @@ export default function PredictionsView() {
       )}
 
       <Divider style={{ margin: "12px 0" }} />
-
-      <Checkbox
-        checked={segmentPositionCacheEnabled}
-        onChange={(event) => toggleSegmentPositionCache(event.target.checked)}
-      >
-        Cache segment positions while browsing
-      </Checkbox>
-      <Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
-        Speeds up filling in positions for newly predicted segments by remembering where segments
-        were seen while scrolling. Off by default — scans every loaded bucket, which can be
-        expensive on large/densely-packed datasets. Turning it on only applies to data loaded
-        afterwards — reload the page if you don't see it taking effect. Turning it off takes effect
-        immediately. The setting is saved with this annotation only.
-      </Text>
 
       <Text strong style={{ display: "block", marginBottom: 4 }}>
         Ignored names
@@ -246,14 +229,15 @@ export default function PredictionsView() {
         Upload Offline Predictions
       </Text>
       <Text style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
-        Upload a CSV with "seg" (segment ID) and "neuron" (a neuron name) columns. Filename is used
-        as the prediction source name.
+        Upload a CSV with "seg" (tree ID) and "neuron" (a neuron name) columns. Filename is used as
+        the prediction source name.
         <br />
         With a "score" column: candidate scores, written for proofreading like a live Run. Ideally
         in confidence percentage space so they can be averaged with other confidence scores.
         <br />
         Without a "score" column: ground-truth seeds — written at 100% and auto-confirmed, skipping
-        any row whose name conflicts with an existing confirmation elsewhere.
+        any row whose name conflicts with an existing confirmation elsewhere. Rows referencing a
+        tree ID that doesn't exist yet are skipped (this panel never creates trees).
       </Text>
       <Upload
         name="offlinePredictions"

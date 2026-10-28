@@ -1,15 +1,22 @@
 /*
- * Client for the standalone neuron-identity prediction service (see
- * celegans_contactome/service), which predicts identities for a whole
+ * Client for the standalone neuron-identity (contactome) prediction service
+ * (see celegans_contactome/service), which predicts identities for a whole
  * contactome in a single call. The types below mirror that service's
  * `app/schemas.py` field-for-field — read that file directly if this drifts,
  * rather than trusting this comment.
+ *
+ * This now runs against the SKELETON/tree layer instead of a segmentation
+ * layer — the `id`/`segment_id` fields below refer to tree IDs, not segment
+ * IDs. The service's own JSON contract (field names included) is UNCHANGED —
+ * it only ever dealt in plain numeric IDs — only what those IDs mean on the
+ * WK side has shifted, so the wire-format field name `segment_id` is kept
+ * as-is rather than renamed, to avoid silently breaking deserialization.
  *
  * Plain `fetch` is used deliberately instead of WK's `Request` helper
  * (libs/request.ts): that helper is geared toward WK's own authenticated
  * endpoints, and this service takes no WK token by design.
  */
-export type PredictionServiceInputSegment = {
+export type PredictionServiceInputNode = {
   id: number;
   name?: string | null;
   is_confirmed?: boolean;
@@ -22,7 +29,7 @@ export type PredictionServiceContactEdge = {
 };
 
 export type PredictRequestPayload = {
-  segments: PredictionServiceInputSegment[];
+  segments: PredictionServiceInputNode[];
   contact_edges: PredictionServiceContactEdge[];
   exclude_assigned_names?: boolean;
   reference_dataset: string;
@@ -35,14 +42,15 @@ export type ServiceCandidate = {
   score: number;
 };
 
-export type SegmentPredictionPayload = {
+export type NodePredictionPayload = {
+  /** Wire-format name is unchanged from the service's actual JSON key; the value is a tree ID. */
   segment_id: number;
   candidates: ServiceCandidate[];
 };
 
 export type PredictResponsePayload = {
   reference_dataset: string;
-  predictions: SegmentPredictionPayload[];
+  predictions: NodePredictionPayload[];
 };
 
 export type ReferenceDatasetNeuronsPayload = {
