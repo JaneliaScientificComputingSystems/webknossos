@@ -218,21 +218,14 @@ export const skeletonActionPolicies: Record<SkeletonTracingAction["type"], Skele
   // Only ever touches agglomerate trees, so it is safe in concurrent collaboration mode.
   SET_TREES_AGGLOMERATE_INFO_TRACING_ID: { needsUpdatePermission: true, collab: "allow" },
 
-  // Simple last-writer-wins field overwrites on an existing tree (no structural edit to
-  // nodes/edges another collaborator could be concurrently touching), so allowed on ANY
-  // tree in concurrent collaboration mode — needed for the tree-based cell-identity panel
-  // (janelia), where multiple people view/edit the same annotation's identity calls live and
-  // trees are never created/deleted from within that panel (tree creation remains
-  // collab-restricted below).
-  SET_TREE_NAME: { needsUpdatePermission: true, collab: "allow" },
-  SET_TREE_METADATA: { needsUpdatePermission: true, collab: "allow" },
-
   // Mutations allowed in concurrent collaboration mode only when the affected tree is agglomerate.
   DELETE_EDGE: { needsUpdatePermission: true, collab: "onlyAgglomerateTree" },
   MERGE_TREES: { needsUpdatePermission: true, collab: "onlyAgglomerateTree" },
   ADD_TREES_AND_GROUPS: { needsUpdatePermission: true, collab: "onlyAgglomerateTree" },
   DELETE_TREE: { needsUpdatePermission: true, collab: "onlyAgglomerateTree" },
   DELETE_TREES: { needsUpdatePermission: true, collab: "onlyAgglomerateTree" },
+  SET_TREE_NAME: { needsUpdatePermission: true, collab: "onlyAgglomerateTree" },
+  SET_TREE_METADATA: { needsUpdatePermission: true, collab: "onlyAgglomerateTree" },
   SET_TREE_AGGLOMERATE_INFO_ID: { needsUpdatePermission: true, collab: "onlyAgglomerateTree" },
   SET_EDGES_ARE_VISIBLE: { needsUpdatePermission: true, collab: "onlyAgglomerateTree" },
   SET_TREE_GROUP: { needsUpdatePermission: true, collab: "onlyAgglomerateTree" },
