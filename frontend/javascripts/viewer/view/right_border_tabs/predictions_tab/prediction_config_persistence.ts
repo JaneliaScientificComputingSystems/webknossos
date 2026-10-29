@@ -3,17 +3,21 @@
  * names) into the annotation's own `description` field — the only
  * general-purpose, frontend-writable, per-annotation text field this fork of
  * webknossos exposes (no per-annotation key-value metadata list exists,
- * unlike the per-segment `metadata: MetadataEntryProto[]` this feature
- * already uses elsewhere). That field is also a human-facing free-text box
- * in the Info tab, so this config is appended after a fenced marker rather
- * than overwriting the field outright — anything the user or dataset owner
- * wrote above the marker survives every read/write round-trip untouched.
+ * unlike the per-tree `metadata: MetadataEntryProto[]` this feature already
+ * uses elsewhere). That field is also a human-facing free-text box in the
+ * Info tab, so this config is appended after a fenced marker rather than
+ * overwriting the field outright — anything the user or dataset owner wrote
+ * above the marker survives every read/write round-trip untouched.
  */
 import type { ContactEdge } from "viewer/view/right_border_tabs/predictions_tab/contact_profile";
 
 const CONFIG_MARKER = "<!-- wk-identity-prediction-config: do not edit below this line -->";
 
+export type PredictionMode = "contactome" | "nuclear";
+
 export type PersistedPredictionConfig = {
+  /** Which service the Configuration tab is currently showing inputs for. Doesn't clear the other mode's config on switch — see contactEdges/selectedReferenceDatasets vs. selectedEmbryo/selectedTimepoint below, which all persist independently of this. */
+  predictionMode: PredictionMode;
   contactEdges: ContactEdge[];
   contactFileName: string | null;
   /** ms since epoch, set when the contact profile was uploaded — null if contactFileName is null. */
@@ -23,8 +27,9 @@ export type PersistedPredictionConfig = {
   lastRunConfirmedNames: string[] | null;
   /** Reference datasets checked in the Configuration tab. Serialized as an array (JSON has no Set type); callers convert to/from Set at the boundary. */
   selectedReferenceDatasets: string[];
-  /** Whether segment_position_cache.ts scans loaded buckets for this annotation. Off by default; scoped per-annotation (not per-browser) like the rest of this config, since it only pays off / costs anything for the dataset this annotation belongs to. */
-  segmentPositionCacheEnabled: boolean;
+  /** Nuclear-position reference atlases checked in the Configuration tab, encoded as "embryo|timepoint" strings (mirroring selectedReferenceDatasets's shape) — one prediction request is made per checked atlas, same as contactome's reference datasets. Serialized as an array (JSON has no Set type); callers convert to/from Set at the boundary. */
+  selectedAtlasKeys: string[];
+  nTrials: number;
 };
 
 /** Strips the fenced config block (if any) from a saved description, returning just the human-written part. */
@@ -54,6 +59,7 @@ export function parseConfigFromDescription(description: string): PersistedPredic
       return null;
     }
     return {
+      predictionMode: parsed.predictionMode === "nuclear" ? "nuclear" : "contactome",
       contactEdges: parsed.contactEdges,
       contactFileName: typeof parsed.contactFileName === "string" ? parsed.contactFileName : null,
       contactUploadedAt:
@@ -71,7 +77,10 @@ export function parseConfigFromDescription(description: string): PersistedPredic
             (name: unknown): name is string => typeof name === "string",
           )
         : [],
-      segmentPositionCacheEnabled: parsed.segmentPositionCacheEnabled === true,
+      selectedAtlasKeys: Array.isArray(parsed.selectedAtlasKeys)
+        ? parsed.selectedAtlasKeys.filter((key: unknown): key is string => typeof key === "string")
+        : [],
+      nTrials: typeof parsed.nTrials === "number" ? parsed.nTrials : 20,
     };
   } catch (_exception) {
     return null;
