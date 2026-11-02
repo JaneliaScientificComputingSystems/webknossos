@@ -326,7 +326,8 @@ class UserDAO @Inject() (sqlClient: SqlClient)(implicit ec: ExecutionContext)
         INNER JOIN agg_experiences aux ON aux._user = u._id
         -- left outer join to keep users that do not have a paying organization
         LEFT JOIN $payingOrganizationInfoSubquery AS payingOrganization ON payingOrganization._multiUser = u._multiUser
-        WHERE $selectionPredicates
+        WHERE NOT u.isDeleted
+        AND $selectionPredicates
         GROUP BY
           u._id, m.firstname, m.lastname, u.userConfiguration, u.isAdmin, u.isOrganizationOwner, u.isDatasetManager,
           u.isDeactivated, u.lastActivity, u.created, u.lastTaskTypeId, o._id, m._id, m.email,
@@ -541,6 +542,29 @@ class UserDAO @Inject() (sqlClient: SqlClient)(implicit ec: ExecutionContext)
     for {
       _ <- run(q"""UPDATE webknossos.users SET isDeleted = true WHERE _organization = $organizationId""".asUpdate)
     } yield ()
+
+  // Also deletes the multiUser if it has no other users left, renaming its email so the address can register again.
+  def deleteOneWithUnusedMultiUser(userId: ObjectId, multiUserId: ObjectId)(using ctx: DBAccessContext): Fox[Unit] = {
+    val deletedEmailSuffix = s".deleted.at.${Instant.now.epochMillis}"
+    for {
+      _ <- assertDeleteAccess(userId)
+      _ <- run(
+        DBIO
+          .sequence(
+            Seq(
+              q"UPDATE webknossos.users SET isDeleted = TRUE WHERE _id = $userId".asUpdate,
+              q"""UPDATE webknossos.multiUsers
+                  SET isDeleted = TRUE,
+                      email = CONCAT(email, $deletedEmailSuffix),
+                      _lastLoggedInIdentity = NULL
+                  WHERE _id = $multiUserId
+                  AND NOT EXISTS (SELECT 1 FROM webknossos.users_ WHERE _multiUser = $multiUserId)""".asUpdate
+            )
+          )
+          .transactionally
+      )
+    } yield ()
+  }
 
   def findTeamMembershipsForUser(userId: ObjectId): Fox[List[TeamMembership]] =
     for {

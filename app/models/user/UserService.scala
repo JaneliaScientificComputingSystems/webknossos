@@ -242,6 +242,15 @@ class UserService @Inject() (
     } yield updated
   }
 
+  def delete(user: User)(using ctx: DBAccessContext): Fox[Unit] =
+    for {
+      _ <- userDAO.deleteOneWithUnusedMultiUser(user._id, user._multiUser)
+      _ = removeUserFromCache(user._id)
+      _ = logger.info(
+        s"Deleted user ${user._id} (multiUser ${user._multiUser}). Access context: ${ctx.toStringAnonymous}"
+      )
+    } yield ()
+
   def removeUserFromCache(userId: ObjectId): Unit =
     userCache.clear(idAndAccessContextString => idAndAccessContextString._1 == userId)
 

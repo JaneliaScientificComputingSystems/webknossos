@@ -391,6 +391,20 @@ class UserController @Inject() (
       } yield Ok(updatedJs)
     }
 
+  // Meant for unwanted sign-ups that were never activated, so only users without annotations can be deleted.
+  def delete(userId: ObjectId): Action[AnyContent] = sil.SecuredAction.fox { implicit request =>
+    for {
+      user <- userDAO.findOne(userId) ?~> Msg.User.notFound(userId) ~> NOT_FOUND
+      _ <- Fox.fromBool(request.identity.isAdminOf(user)) ?~> Msg.notAllowed ~> FORBIDDEN
+      _ <- Fox.fromBool(user._id != request.identity._id) ?~> Msg.User.noSelfDelete ~> FORBIDDEN
+      _ <- Fox.fromBool(!user.isOrganizationOwner) ?~> Msg.User.deleteOwner ~> FORBIDDEN
+      _ <- Fox.fromBool(user.isDeactivated) ?~> Msg.User.deleteOnlyDeactivated
+      annotationCount <- annotationDAO.countAllIncludingDeletedForUser(user._id)
+      _ <- Fox.fromBool(annotationCount == 0) ?~> Msg.User.deleteWithAnnotations
+      _ <- userService.delete(user)
+    } yield Ok
+  }
+
   private def checkNameUpdatePermissions(
       originalUser: User,
       issuingUser: User,

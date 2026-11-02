@@ -2,6 +2,7 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   CopyOutlined,
+  DeleteOutlined,
   InfoCircleOutlined,
   MailOutlined,
   TeamOutlined,
@@ -17,7 +18,7 @@ import { unwrapOrThrow } from "admin/api/api_result";
 import ChangeUsernameView from "admin/auth/change_username_view";
 import { InviteUsersModal } from "admin/onboarding";
 import { getActiveUserCount } from "admin/organization/pricing_plan_utils";
-import { getEditableUsers, updateUser } from "admin/rest_api";
+import { deleteUser, getEditableUsers, updateUser } from "admin/rest_api";
 import { renderTeamRolesAndPermissionsForUser } from "admin/team/team_list_view";
 import ExperienceModalView from "admin/user/experience_modal_view";
 import PermissionsAndTeamsModalView from "admin/user/permissions_and_teams_modal_view";
@@ -129,6 +130,51 @@ function UserListView() {
     activateUser(user, false);
   }
 
+  async function deleteUsers(usersToDelete: APIUser[]) {
+    const deletedUserIds: string[] = [];
+    for (const user of usersToDelete) {
+      try {
+        await deleteUser(user.id);
+        deletedUserIds.push(user.id);
+      } catch (_error) {
+        // The request already shows the reason (e.g., the user has annotations) as a toast.
+      }
+    }
+    queryClient.setQueryData(["editableUsers"], (currentUsers: APIUser[]) =>
+      currentUsers.filter((user) => !deletedUserIds.includes(user.id)),
+    );
+    setSelectedUserIds((currentSelectedUserIds) =>
+      currentSelectedUserIds.filter((userId) => !deletedUserIds.includes(userId.toString())),
+    );
+  }
+
+  function confirmDeleteUsers(usersToDelete: APIUser[]): void {
+    modal.confirm({
+      title:
+        usersToDelete.length === 1
+          ? `Delete ${usersToDelete[0].email}?`
+          : `Delete ${usersToDelete.length} users?`,
+      content: (
+        <>
+          <p>
+            Deleted accounts are removed from your organization and can no longer log in. Only
+            deactivated users without annotations can be deleted. This cannot be undone.
+          </p>
+          {usersToDelete.length > 1 ? (
+            <ul>
+              {usersToDelete.map((user) => (
+                <li key={user.id}>{user.email}</li>
+              ))}
+            </ul>
+          ) : null}
+        </>
+      ),
+      okText: "Delete",
+      okButtonProps: { danger: true },
+      onOk: () => deleteUsers(usersToDelete),
+    });
+  }
+
   function handleUsersChange(updatedUsers: Array<APIUser>): void {
     queryClient.setQueryData(["editableUsers"], updatedUsers);
     setIsExperienceModalOpen(false);
@@ -183,6 +229,17 @@ function UserListView() {
                 Activate User
               </LinkButton>
             </Col>
+            {activeUser.isAdmin ? (
+              <Col span={4}>
+                <LinkButton
+                  danger
+                  onClick={() => confirmDeleteUsers([user])}
+                  icon={<DeleteOutlined />}
+                >
+                  Delete User
+                </LinkButton>
+              </Col>
+            ) : null}
           </Row>
         ))}
       </React.Fragment>
@@ -195,6 +252,17 @@ function UserListView() {
         type="info"
         icon={<UserOutlined className="icon-margin-right" />}
         showIcon
+        action={
+          activeUser.isAdmin && newInactiveUsers.length > 1 ? (
+            <Button
+              danger
+              icon={<DeleteOutlined />}
+              onClick={() => confirmDeleteUsers(newInactiveUsers)}
+            >
+              Delete All
+            </Button>
+          ) : null
+        }
       />
     ) : null;
   }
@@ -590,6 +658,18 @@ function UserListView() {
                     Activate User
                   </LinkButton>
                 )}
+                {!user.isActive && activeUser.isAdmin ? (
+                  <LinkButton
+                    danger
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      confirmDeleteUsers([user]);
+                    }}
+                    icon={<DeleteOutlined />}
+                  >
+                    Delete User
+                  </LinkButton>
+                ) : null}
               </Flex>
             )}
           />

@@ -295,6 +295,12 @@ export async function updateUser(
   );
 }
 
+export async function deleteUser(userId: string): Promise<void> {
+  return Request.triggerRequest(`/api/users/${userId}`, {
+    method: "DELETE",
+  });
+}
+
 export function updateNovelUserExperienceInfos(
   user: APIUser,
   novelUserExperienceShape: Record<string, any>,
