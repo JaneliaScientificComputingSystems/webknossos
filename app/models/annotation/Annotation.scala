@@ -671,13 +671,6 @@ class AnnotationDAO @Inject() (sqlClient: SqlClient, annotationLayerDAO: Annotat
       count <- countList.headOption.toFox
     } yield count
 
-  // Includes deleted annotations, which still reference their owner.
-  def countAllIncludingDeletedForUser(userId: ObjectId): Fox[Int] =
-    for {
-      countList <- run(q"SELECT COUNT(*) FROM webknossos.annotations WHERE _user = $userId".as[Int])
-      count <- countList.headOption.toFox
-    } yield count
-
   def countAllForOrganization(organizationId: String): Fox[Int] =
     for {
       countList <- run(q"""SELECT COUNT(*)

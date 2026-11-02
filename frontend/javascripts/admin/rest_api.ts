@@ -295,9 +295,10 @@ export async function updateUser(
   );
 }
 
-export async function deleteUser(userId: string): Promise<void> {
-  return Request.triggerRequest(`/api/users/${userId}`, {
-    method: "DELETE",
+export async function updateUserIsRejected(userId: string, isRejected: boolean): Promise<APIUser> {
+  return Request.sendJSONReceiveJSON(`/api/users/${userId}/rejected`, {
+    method: "PUT",
+    data: { isRejected },
   });
 }
 

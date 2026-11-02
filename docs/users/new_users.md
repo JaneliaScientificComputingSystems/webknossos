@@ -19,9 +19,9 @@ Manual activation is only relevant on instances where this default behavior has 
 2. Click `Activate User` in the user's row.
 3. You will be prompted to configure the user's teams and permissions. If you skip this step, the user can initially only see datasets belonging to the `Default` team.
 
-To revoke a user's access, **deactivate** them from the same `Admin > Users` list. A deactivated user can no longer log in but is retained for record-keeping, and can be reactivated later.
+To revoke a user's access, **deactivate** them from the same `Admin > Users` list (there is no hard-delete for users). A deactivated user can no longer log in but is retained for record-keeping, and can be reactivated later.
 
-To get rid of unwanted self-signup accounts, admins can instead click `Delete User` in the row of a deactivated user, or `Delete All` on the notice listing new inactive users. Only deactivated users without any annotations can be deleted, and deletion cannot be undone.
+To turn down an unwanted self-signup without activating it, an admin can click `Mark Permanently Inactive`, either in the user's row or in the notice listing new inactive users (`Mark All Permanently Inactive` handles the whole notice). The account stays deactivated, is tagged `Rejected` under the `Deactivated` status filter, disappears from the notice, and cannot be activated until an admin clicks `Undo Reject`.
 
 ## Adding Users to Teams
 Teams help organize users into logical groups for better collaboration and access control. By assigning users to specific teams, you can manage dataset permissions, coordinate tasks, and streamline project workflows more efficiently.

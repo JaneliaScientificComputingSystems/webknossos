@@ -2,11 +2,12 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   CopyOutlined,
-  DeleteOutlined,
   InfoCircleOutlined,
   MailOutlined,
+  StopOutlined,
   TeamOutlined,
   TrophyOutlined,
+  UndoOutlined,
   UserAddOutlined,
   UserDeleteOutlined,
   UserOutlined,
@@ -18,7 +19,7 @@ import { unwrapOrThrow } from "admin/api/api_result";
 import ChangeUsernameView from "admin/auth/change_username_view";
 import { InviteUsersModal } from "admin/onboarding";
 import { getActiveUserCount } from "admin/organization/pricing_plan_utils";
-import { deleteUser, getEditableUsers, updateUser } from "admin/rest_api";
+import { getEditableUsers, updateUser, updateUserIsRejected } from "admin/rest_api";
 import { renderTeamRolesAndPermissionsForUser } from "admin/team/team_list_view";
 import ExperienceModalView from "admin/user/experience_modal_view";
 import PermissionsAndTeamsModalView from "admin/user/permissions_and_teams_modal_view";
@@ -130,48 +131,45 @@ function UserListView() {
     activateUser(user, false);
   }
 
-  async function deleteUsers(usersToDelete: APIUser[]) {
-    const deletedUserIds: string[] = [];
-    for (const user of usersToDelete) {
+  async function setUsersRejected(usersToUpdate: APIUser[], isRejected: boolean) {
+    const updatedUsers: APIUser[] = [];
+    for (const user of usersToUpdate) {
       try {
-        await deleteUser(user.id);
-        deletedUserIds.push(user.id);
+        updatedUsers.push(await updateUserIsRejected(user.id, isRejected));
       } catch (_error) {
-        // The request already shows the reason (e.g., the user has annotations) as a toast.
+        // The request already shows the reason as a toast.
       }
     }
+    const updatedUsersMap = keyBy(updatedUsers, (user) => user.id);
     queryClient.setQueryData(["editableUsers"], (currentUsers: APIUser[]) =>
-      currentUsers.filter((user) => !deletedUserIds.includes(user.id)),
-    );
-    setSelectedUserIds((currentSelectedUserIds) =>
-      currentSelectedUserIds.filter((userId) => !deletedUserIds.includes(userId.toString())),
+      currentUsers.map((user) => updatedUsersMap[user.id] || user),
     );
   }
 
-  function confirmDeleteUsers(usersToDelete: APIUser[]): void {
+  function confirmRejectUsers(usersToReject: APIUser[]): void {
     modal.confirm({
       title:
-        usersToDelete.length === 1
-          ? `Delete ${usersToDelete[0].email}?`
-          : `Delete ${usersToDelete.length} users?`,
+        usersToReject.length === 1
+          ? `Mark ${usersToReject[0].email} as permanently inactive?`
+          : `Mark ${usersToReject.length} users as permanently inactive?`,
       content: (
         <>
           <p>
-            Deleted accounts are removed from your organization and can no longer log in. Only
-            deactivated users without annotations can be deleted. This cannot be undone.
+            They stay deactivated, no longer appear in the new inactive users notice, and cannot be
+            activated until you undo this. They remain listed under the Deactivated status filter.
           </p>
-          {usersToDelete.length > 1 ? (
+          {usersToReject.length > 1 ? (
             <ul>
-              {usersToDelete.map((user) => (
+              {usersToReject.map((user) => (
                 <li key={user.id}>{user.email}</li>
               ))}
             </ul>
           ) : null}
         </>
       ),
-      okText: "Delete",
+      okText: "Mark Permanently Inactive",
       okButtonProps: { danger: true },
-      onOk: () => deleteUsers(usersToDelete),
+      onOk: () => setUsersRejected(usersToReject, true),
     });
   }
 
@@ -206,7 +204,8 @@ function UserListView() {
   function renderNewUsersAlert() {
     const now = dayjs();
     const newInactiveUsers = users.filter(
-      (user) => !user.isActive && dayjs.duration(now.diff(user.created)).asDays() <= 14,
+      (user) =>
+        !user.isActive && !user.isRejected && dayjs.duration(now.diff(user.created)).asDays() <= 14,
     );
     const newInactiveUsersHeader = (
       <React.Fragment>
@@ -230,13 +229,13 @@ function UserListView() {
               </LinkButton>
             </Col>
             {activeUser.isAdmin ? (
-              <Col span={4}>
+              <Col span={6}>
                 <LinkButton
                   danger
-                  onClick={() => confirmDeleteUsers([user])}
-                  icon={<DeleteOutlined />}
+                  onClick={() => confirmRejectUsers([user])}
+                  icon={<StopOutlined />}
                 >
-                  Delete User
+                  Mark Permanently Inactive
                 </LinkButton>
               </Col>
             ) : null}
@@ -256,10 +255,10 @@ function UserListView() {
           activeUser.isAdmin && newInactiveUsers.length > 1 ? (
             <Button
               danger
-              icon={<DeleteOutlined />}
-              onClick={() => confirmDeleteUsers(newInactiveUsers)}
+              icon={<StopOutlined />}
+              onClick={() => confirmRejectUsers(newInactiveUsers)}
             >
-              Delete All
+              Mark All Permanently Inactive
             </Button>
           ) : null
         }
@@ -609,6 +608,13 @@ function UserListView() {
                 <>
                   {activation}
                   {mail}
+                  {user.isRejected ? (
+                    <Tooltip title="Marked as permanently inactive by an admin">
+                      <Tag color="red" variant="outlined">
+                        Rejected
+                      </Tag>
+                    </Tooltip>
+                  ) : null}
                 </>
               );
             }}
@@ -647,29 +653,43 @@ function UserListView() {
                       Deactivate User
                     </LinkButton>
                   ) : null
+                ) : user.isRejected ? (
+                  activeUser.isAdmin ? (
+                    <LinkButton
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setUsersRejected([user], false);
+                      }}
+                      icon={<UndoOutlined />}
+                    >
+                      Undo Reject
+                    </LinkButton>
+                  ) : null
                 ) : (
-                  <LinkButton
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      activateUser(user);
-                    }}
-                    icon={<UserAddOutlined />}
-                  >
-                    Activate User
-                  </LinkButton>
+                  <>
+                    <LinkButton
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        activateUser(user);
+                      }}
+                      icon={<UserAddOutlined />}
+                    >
+                      Activate User
+                    </LinkButton>
+                    {activeUser.isAdmin ? (
+                      <LinkButton
+                        danger
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          confirmRejectUsers([user]);
+                        }}
+                        icon={<StopOutlined />}
+                      >
+                        Mark Permanently Inactive
+                      </LinkButton>
+                    ) : null}
+                  </>
                 )}
-                {!user.isActive && activeUser.isAdmin ? (
-                  <LinkButton
-                    danger
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      confirmDeleteUsers([user]);
-                    }}
-                    icon={<DeleteOutlined />}
-                  >
-                    Delete User
-                  </LinkButton>
-                ) : null}
               </Flex>
             )}
           />

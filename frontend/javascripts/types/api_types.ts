@@ -354,6 +354,8 @@ export type APIUser = APIUserBase & {
   readonly isEmailVerified: boolean;
   readonly isGuest: boolean;
   readonly isUnlisted: boolean;
+  // Marked as permanently inactive by an admin; stays deactivated until that is undone.
+  readonly isRejected: boolean;
 };
 export type APITimeInterval = {
   paymentInterval: {
