@@ -448,6 +448,7 @@ function UserListView() {
           onRow={(user) => ({
             onClick: () => onSelectUserRow(user.id),
           })}
+          rowClassName={(user) => (user.isActive ? "" : "deactivated-user-row")}
           className="large-table"
           scroll={{
             x: "max-content",
@@ -522,7 +523,7 @@ function UserListView() {
             title="Status"
             dataIndex="isActive"
             key="isActive"
-            width={110}
+            width={170}
             filters={[
               {
                 text: "Activated",
@@ -569,16 +570,17 @@ function UserListView() {
                     }}
                   />
                 </Tooltip>
+              ) : user.isRejected ? (
+                <Tooltip title="Marked as permanently inactive by an admin">
+                  <Tag color="red" variant="outlined">
+                    Rejected
+                  </Tag>
+                </Tooltip>
               ) : (
                 <Tooltip title="Account is not activated">
-                  <Typography.Text type="danger">
-                    <CloseCircleOutlined
-                      className="icon-margin-right"
-                      style={{
-                        fontSize: 20,
-                      }}
-                    />
-                  </Typography.Text>
+                  <Tag color="orange" variant="outlined" icon={<CloseCircleOutlined />}>
+                    Deactivated
+                  </Tag>
                 </Tooltip>
               );
 
@@ -608,13 +610,6 @@ function UserListView() {
                 <>
                   {activation}
                   {mail}
-                  {user.isRejected ? (
-                    <Tooltip title="Marked as permanently inactive by an admin">
-                      <Tag color="red" variant="outlined">
-                        Rejected
-                      </Tag>
-                    </Tooltip>
-                  ) : null}
                 </>
               );
             }}
