@@ -72,6 +72,7 @@ GET           /user/annotations                                                 
 GET           /users/:id                                                                        controllers.UserController.user(id: ObjectId)
 PATCH         /users/:id                                                                        controllers.UserController.update(id: ObjectId)
 PUT           /users/:id/taskTypeId                                                             controllers.UserController.updateLastTaskTypeId(id: ObjectId)
+PUT           /users/:id/rejected                                                               controllers.UserController.updateIsRejected(id: ObjectId)
 PUT           /users/:id/novelUserExperienceInfos                                               controllers.UserController.updateNovelUserExperienceInfos(id: ObjectId)
 PUT           /users/:id/selectedTheme                                                          controllers.UserController.updateSelectedTheme(id: ObjectId)
 GET           /users/:id/tasks                                                                  controllers.UserController.userTasks(id: ObjectId, isFinished: Option[Boolean], limit: Option[Int], pageNumber: Option[Int], includeTotalCount: Option[Boolean])

@@ -52,6 +52,17 @@ case class User(
   def isAdminOf(otherUser: User): Boolean =
     isAdminOf(otherUser._organization)
 
+  def isRejected: Boolean = UserRejection.isRejected(userConfiguration)
+
+}
+
+// Admins can reject unwanted sign-ups, which keeps them deactivated until the rejection is undone.
+// The flag lives in userConfiguration instead of its own column, so this fork patch needs no schema evolution.
+object UserRejection {
+  val configurationKey = "janeliaRejected"
+
+  def isRejected(userConfiguration: JsObject): Boolean =
+    (userConfiguration \ configurationKey).asOpt[Boolean].contains(true)
 }
 
 case class UserCompactInfo(
@@ -533,6 +544,18 @@ class UserDAO @Inject() (sqlClient: SqlClient)(implicit ec: ExecutionContext)
       _ <- assertUpdateAccess(userId)
       _ <- run(q"""UPDATE webknossos.users
                    SET lasttasktypeid = $lastTaskTypeId
+                   WHERE _id = $userId""".asUpdate)
+    } yield ()
+
+  // The key matches UserRejection.configurationKey.
+  def updateIsRejected(userId: ObjectId, isRejected: Boolean)(using ctx: DBAccessContext): Fox[Unit] =
+    for {
+      _ <- assertUpdateAccess(userId)
+      _ <- run(q"""UPDATE webknossos.users
+                   SET userConfiguration = CASE WHEN $isRejected
+                     THEN jsonb_set(userConfiguration, '{janeliaRejected}', 'true')
+                     ELSE userConfiguration - 'janeliaRejected'
+                   END
                    WHERE _id = $userId""".asUpdate)
     } yield ()
 

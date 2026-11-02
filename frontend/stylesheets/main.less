@@ -512,3 +512,9 @@ body {
     margin-top: 0 !important;
   }
 }
+
+/** Deactivated users in Admin > Users. A solid background, so the fixed Actions column stays opaque. */
+.large-table .deactivated-user-row > td {
+  background-color: var(--ant-color-bg-layout);
+  color: var(--ant-color-text-secondary);
+}

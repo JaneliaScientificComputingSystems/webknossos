@@ -4,8 +4,10 @@ import {
   CopyOutlined,
   InfoCircleOutlined,
   MailOutlined,
+  StopOutlined,
   TeamOutlined,
   TrophyOutlined,
+  UndoOutlined,
   UserAddOutlined,
   UserDeleteOutlined,
   UserOutlined,
@@ -17,7 +19,7 @@ import { unwrapOrThrow } from "admin/api/api_result";
 import ChangeUsernameView from "admin/auth/change_username_view";
 import { InviteUsersModal } from "admin/onboarding";
 import { getActiveUserCount } from "admin/organization/pricing_plan_utils";
-import { getEditableUsers, updateUser } from "admin/rest_api";
+import { getEditableUsers, updateUser, updateUserIsRejected } from "admin/rest_api";
 import { renderTeamRolesAndPermissionsForUser } from "admin/team/team_list_view";
 import ExperienceModalView from "admin/user/experience_modal_view";
 import PermissionsAndTeamsModalView from "admin/user/permissions_and_teams_modal_view";
@@ -129,6 +131,48 @@ function UserListView() {
     activateUser(user, false);
   }
 
+  async function setUsersRejected(usersToUpdate: APIUser[], isRejected: boolean) {
+    const updatedUsers: APIUser[] = [];
+    for (const user of usersToUpdate) {
+      try {
+        updatedUsers.push(await updateUserIsRejected(user.id, isRejected));
+      } catch (_error) {
+        // The request already shows the reason as a toast.
+      }
+    }
+    const updatedUsersMap = keyBy(updatedUsers, (user) => user.id);
+    queryClient.setQueryData(["editableUsers"], (currentUsers: APIUser[]) =>
+      currentUsers.map((user) => updatedUsersMap[user.id] || user),
+    );
+  }
+
+  function confirmRejectUsers(usersToReject: APIUser[]): void {
+    modal.confirm({
+      title:
+        usersToReject.length === 1
+          ? `Mark ${usersToReject[0].email} as permanently inactive?`
+          : `Mark ${usersToReject.length} users as permanently inactive?`,
+      content: (
+        <>
+          <p>
+            They stay deactivated, no longer appear in the new inactive users notice, and cannot be
+            activated until you undo this. They remain listed under the Deactivated status filter.
+          </p>
+          {usersToReject.length > 1 ? (
+            <ul>
+              {usersToReject.map((user) => (
+                <li key={user.id}>{user.email}</li>
+              ))}
+            </ul>
+          ) : null}
+        </>
+      ),
+      okText: "Mark Permanently Inactive",
+      okButtonProps: { danger: true },
+      onOk: () => setUsersRejected(usersToReject, true),
+    });
+  }
+
   function handleUsersChange(updatedUsers: Array<APIUser>): void {
     queryClient.setQueryData(["editableUsers"], updatedUsers);
     setIsExperienceModalOpen(false);
@@ -160,7 +204,8 @@ function UserListView() {
   function renderNewUsersAlert() {
     const now = dayjs();
     const newInactiveUsers = users.filter(
-      (user) => !user.isActive && dayjs.duration(now.diff(user.created)).asDays() <= 14,
+      (user) =>
+        !user.isActive && !user.isRejected && dayjs.duration(now.diff(user.created)).asDays() <= 14,
     );
     const newInactiveUsersHeader = (
       <React.Fragment>
@@ -183,6 +228,17 @@ function UserListView() {
                 Activate User
               </LinkButton>
             </Col>
+            {activeUser.isAdmin ? (
+              <Col span={6}>
+                <LinkButton
+                  danger
+                  onClick={() => confirmRejectUsers([user])}
+                  icon={<StopOutlined />}
+                >
+                  Mark Permanently Inactive
+                </LinkButton>
+              </Col>
+            ) : null}
           </Row>
         ))}
       </React.Fragment>
@@ -195,6 +251,17 @@ function UserListView() {
         type="info"
         icon={<UserOutlined className="icon-margin-right" />}
         showIcon
+        action={
+          activeUser.isAdmin && newInactiveUsers.length > 1 ? (
+            <Button
+              danger
+              icon={<StopOutlined />}
+              onClick={() => confirmRejectUsers(newInactiveUsers)}
+            >
+              Mark All Permanently Inactive
+            </Button>
+          ) : null
+        }
       />
     ) : null;
   }
@@ -381,6 +448,7 @@ function UserListView() {
           onRow={(user) => ({
             onClick: () => onSelectUserRow(user.id),
           })}
+          rowClassName={(user) => (user.isActive ? "" : "deactivated-user-row")}
           className="large-table"
           scroll={{
             x: "max-content",
@@ -455,7 +523,7 @@ function UserListView() {
             title="Status"
             dataIndex="isActive"
             key="isActive"
-            width={110}
+            width={170}
             filters={[
               {
                 text: "Activated",
@@ -502,16 +570,17 @@ function UserListView() {
                     }}
                   />
                 </Tooltip>
+              ) : user.isRejected ? (
+                <Tooltip title="Marked as permanently inactive by an admin">
+                  <Tag color="red" variant="outlined">
+                    Rejected
+                  </Tag>
+                </Tooltip>
               ) : (
                 <Tooltip title="Account is not activated">
-                  <Typography.Text type="danger">
-                    <CloseCircleOutlined
-                      className="icon-margin-right"
-                      style={{
-                        fontSize: 20,
-                      }}
-                    />
-                  </Typography.Text>
+                  <Tag color="orange" variant="outlined" icon={<CloseCircleOutlined />}>
+                    Deactivated
+                  </Tag>
                 </Tooltip>
               );
 
@@ -579,16 +648,42 @@ function UserListView() {
                       Deactivate User
                     </LinkButton>
                   ) : null
+                ) : user.isRejected ? (
+                  activeUser.isAdmin ? (
+                    <LinkButton
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setUsersRejected([user], false);
+                      }}
+                      icon={<UndoOutlined />}
+                    >
+                      Undo Reject
+                    </LinkButton>
+                  ) : null
                 ) : (
-                  <LinkButton
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      activateUser(user);
-                    }}
-                    icon={<UserAddOutlined />}
-                  >
-                    Activate User
-                  </LinkButton>
+                  <>
+                    <LinkButton
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        activateUser(user);
+                      }}
+                      icon={<UserAddOutlined />}
+                    >
+                      Activate User
+                    </LinkButton>
+                    {activeUser.isAdmin ? (
+                      <LinkButton
+                        danger
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          confirmRejectUsers([user]);
+                        }}
+                        icon={<StopOutlined />}
+                      >
+                        Mark Permanently Inactive
+                      </LinkButton>
+                    ) : null}
+                  </>
                 )}
               </Flex>
             )}

@@ -7,7 +7,7 @@ import mail.{DefaultMails, Send}
 import models.organization.OrganizationDAO
 import models.user.MultiUserDAO
 import org.apache.pekko.actor.ActorSystem
-import play.api.libs.json.Json
+import play.api.libs.json.{JsBoolean, JsObject, JsString, JsValue, Json}
 import play.api.mvc.{Action, AnyContent, PlayBodyParsers, Result}
 import play.silhouette.api.Silhouette
 import security.{CertificateValidationService, WkEnv}
@@ -46,8 +46,21 @@ class Application @Inject() (
 
   // This only changes on server restart, so we can cache the full result.
   private lazy val cachedFeaturesResult: Result = addNoCacheHeaderFallback(
-    Ok(conf.raw.underlying.getConfig("features").resolve.root.render(ConfigRenderOptions.concise())).as(jsonMimeType)
+    Ok(
+      withBooleanStringsAsBooleans(
+        Json.parse(conf.raw.underlying.getConfig("features").resolve.root.render(ConfigRenderOptions.concise()))
+      )
+    )
   )
+
+  // Values set as -D system properties are always config strings, so e.g.
+  // -Dfeatures.registerToDefaultOrgaEnabled=false would reach the frontend as the truthy "false".
+  private def withBooleanStringsAsBooleans(json: JsValue): JsValue = json match {
+    case JsObject(fields)  => JsObject(fields.map { case (key, value) => key -> withBooleanStringsAsBooleans(value) })
+    case JsString("true")  => JsBoolean(true)
+    case JsString("false") => JsBoolean(false)
+    case other             => other
+  }
 
   def features: Action[AnyContent] = sil.UserAwareAction {
     cachedFeaturesResult

@@ -295,6 +295,13 @@ export async function updateUser(
   );
 }
 
+export async function updateUserIsRejected(userId: string, isRejected: boolean): Promise<APIUser> {
+  return Request.sendJSONReceiveJSON(`/api/users/${userId}/rejected`, {
+    method: "PUT",
+    data: { isRejected },
+  });
+}
+
 export function updateNovelUserExperienceInfos(
   user: APIUser,
   novelUserExperienceShape: Record<string, any>,

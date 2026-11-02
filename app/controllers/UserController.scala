@@ -42,6 +42,8 @@ object UserUpdateParameters {
 
 case class UpdateLastTaskTypeIdParameters(lastTaskTypeId: Option[ObjectId]) derives JsonAutoFormat
 
+case class UpdateIsRejectedParameters(isRejected: Boolean) derives JsonAutoFormat
+
 class UserController @Inject() (
     userService: UserService,
     userDAO: UserDAO,
@@ -287,6 +289,9 @@ class UserController @Inject() (
       ) ?~> Msg.Organization.usersUserLimitReached
     } yield ()
 
+  private def checkNotRejectedIfActivated(user: User, isActive: Boolean): Boolean =
+    !(user.isDeactivated && isActive && user.isRejected)
+
   private def checkNoDeactivateWithRemainingTask(user: User, isActive: Boolean): Fox[Unit] =
     if (!isActive && !user.isDeactivated) {
       for {
@@ -345,6 +350,7 @@ class UserController @Inject() (
         _ <- Fox.fromBool(
           checkNoSelfDeactivate(user, isActive)(request.identity)
         ) ?~> Msg.User.noSelfDeactivate ~> FORBIDDEN
+        _ <- Fox.fromBool(checkNotRejectedIfActivated(user, isActive)) ?~> Msg.User.activateRejected
         _ <- checkNoDeactivateWithRemainingTask(user, isActive)
         _ <- checkNoActivateBeyondLimit(user, isActive)
         _ <- preventZeroAdmins(user, isAdmin)
@@ -386,6 +392,18 @@ class UserController @Inject() (
           trimmedExperiences,
           lastTaskTypeId
         )
+        updatedUser <- userDAO.findOne(userId)
+        updatedJs <- userService.publicWrites(updatedUser, request.identity)
+      } yield Ok(updatedJs)
+    }
+
+  def updateIsRejected(userId: ObjectId): Action[UpdateIsRejectedParameters] =
+    sil.SecuredAction.fox(validateJson[UpdateIsRejectedParameters]) { implicit request =>
+      for {
+        user <- userDAO.findOne(userId) ?~> Msg.User.notFound(userId) ~> NOT_FOUND
+        _ <- Fox.fromBool(request.identity.isAdminOf(user)) ?~> Msg.notAllowed ~> FORBIDDEN
+        _ <- Fox.fromBool(user.isDeactivated) ?~> Msg.User.rejectOnlyDeactivated
+        _ <- userService.updateIsRejected(user, request.body.isRejected)
         updatedUser <- userDAO.findOne(userId)
         updatedJs <- userService.publicWrites(updatedUser, request.identity)
       } yield Ok(updatedJs)

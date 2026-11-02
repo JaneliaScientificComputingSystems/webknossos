@@ -257,11 +257,24 @@ class UserService @Inject() (
   private def getOpenIdConnectPasswordInfo: PasswordInfo =
     PasswordInfo("Empty", "")
 
-  def updateUserConfiguration(user: User, configuration: JsObject)(using ctx: DBAccessContext): Fox[Unit] =
-    userDAO.updateUserConfiguration(user._id, configuration).map { result =>
+  def updateUserConfiguration(user: User, configuration: JsObject)(using ctx: DBAccessContext): Fox[Unit] = {
+    // Users replace their whole configuration, but only admins may change the rejection flag stored in it.
+    val configurationWithRejection =
+      if (user.isRejected) configuration + (UserRejection.configurationKey -> JsBoolean(true))
+      else configuration - UserRejection.configurationKey
+    userDAO.updateUserConfiguration(user._id, configurationWithRejection).map { result =>
       removeUserFromCache(user._id)
       result
     }
+  }
+
+  def updateIsRejected(user: User, isRejected: Boolean)(using ctx: DBAccessContext): Fox[Unit] =
+    for {
+      _ <- userDAO.updateIsRejected(user._id, isRejected)
+      _ = removeUserFromCache(user._id)
+      action = if (isRejected) "Rejected" else "Undid rejection of"
+      _ = logger.info(s"$action user ${user._id}. Access context: ${ctx.toStringAnonymous}")
+    } yield ()
 
   def updateDatasetViewConfiguration(
       user: User,
@@ -403,7 +416,8 @@ class UserService @Inject() (
       "isSuperUser" -> multiUser.isSuperUser,
       "isEmailVerified" -> (multiUser.isEmailVerified || !conf.WebKnossos.User.EmailVerification.activated),
       "isUnlisted" -> user.isUnlisted,
-      "isGuest" -> isGuest
+      "isGuest" -> isGuest,
+      "isRejected" -> user.isRejected
     )
   }
 
@@ -428,6 +442,7 @@ class UserService @Inject() (
           )*
       )
       novelUserExperienceInfos <- JsonHelper.parseAs[JsObject](userCompactInfo.novelUserExperienceInfos).toFox
+      userConfiguration <- JsonHelper.parseAs[JsObject](userCompactInfo.userConfiguration).toFox
     } yield Json.obj(
       "id" -> userCompactInfo._id,
       "email" -> userCompactInfo.email,
@@ -450,7 +465,8 @@ class UserService @Inject() (
       "isSuperUser" -> userCompactInfo.isSuperUser,
       "isEmailVerified" -> userCompactInfo.isEmailVerified,
       "isGuest" -> userCompactInfo.isGuest,
-      "isUnlisted" -> userCompactInfo.isUnlisted
+      "isUnlisted" -> userCompactInfo.isUnlisted,
+      "isRejected" -> UserRejection.isRejected(userConfiguration)
     )
 
   def compactWrites(user: User): Fox[JsObject] = {

@@ -23,6 +23,7 @@ const dummyUser: APIUser = {
   isEmailVerified: true,
   isGuest: false,
   isUnlisted: false,
+  isRejected: false,
 };
 
 export default dummyUser;

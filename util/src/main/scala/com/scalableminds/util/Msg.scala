@@ -708,6 +708,9 @@ object Msg {
     def notFound(id: ObjectId): String = s"User “$id” could not be found or accessed."
     val noSelfDeactivate: String =
       "You cannot deactivate yourself. Please contact an admin to do it for you."
+    val rejectOnlyDeactivated: String = "Only deactivated users can be marked as permanently inactive."
+    val activateRejected: String =
+      "This user is marked as permanently inactive. Please undo that before activating the user."
     val notAuthenticated: String =
       "You are not authorized to view this resource. Please log in."
     val passwordsDontMatch: String = "The two passwords do not match."
