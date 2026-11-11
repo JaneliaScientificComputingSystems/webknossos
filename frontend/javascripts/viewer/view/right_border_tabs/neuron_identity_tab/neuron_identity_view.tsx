@@ -138,6 +138,12 @@ function sourceLabel(source: string): string {
   return source.replace(/^prediction:(nuclear:)?/, "");
 }
 
+/** A name with its display name alongside when it has one, e.g. "ABalaaaalal (AINL)" — the name itself stays the identity key. */
+function nameWithDisplayName(name: string, displayNames: Record<string, string>): string {
+  const cellName = displayNames[name];
+  return cellName != null ? `${name} (${cellName})` : name;
+}
+
 /** All sources with a score for ANY candidate of this tree — the denominator for averageScore. */
 function allSourcesFor(candidates: CandidateScores[]): string[] {
   const sources = new Set<string>();
@@ -264,7 +270,10 @@ const IdentityListItem = memo(function IdentityListItem({
   // per-tree name field, set independently of our identity-confirmation
   // system — showing it would let the name field disagree with the
   // status tag (e.g. "unlabeled" but a name still showing).
-  const displayName = identity.confirmed;
+  const displayName =
+    identity.confirmed != null
+      ? nameWithDisplayName(identity.confirmed, identity.displayNames)
+      : null;
   const sourceGroups = groupCandidatesBySource(identity.candidates);
   // Averaging across exactly one source just restates that source's own
   // numbers, so the "average" row only earns its keep with 2+ sources.
@@ -350,7 +359,7 @@ const IdentityListItem = memo(function IdentityListItem({
             onTagContextMenu(event, row, name);
           }}
         >
-          {name} {formatScore(score)}
+          {nameWithDisplayName(name, identity.displayNames)} {formatScore(score)}
         </Tag>
       </Tooltip>
     );
@@ -546,14 +555,32 @@ const SearchByNameView = memo(function SearchByNameView({
     return Array.from(names).sort((a, b) => a.localeCompare(b));
   }, [allRows, confirmedNames, includeConfirmedElsewhere, ignoredNameSet]);
 
+  // A name's display name is the same on every tree, so one merged lookup
+  // serves the whole name dropdown.
+  const displayNames = useMemo(() => {
+    const merged: Record<string, string> = {};
+    for (const row of allRows) {
+      Object.assign(merged, row.identity.displayNames);
+    }
+    return merged;
+  }, [allRows]);
+
   const nameOptions = useMemo(() => {
     const lowerQuery = query.trim().toLowerCase();
     const filtered =
       lowerQuery.length === 0
         ? knownNames
-        : knownNames.filter((name) => name.toLowerCase().startsWith(lowerQuery));
-    return filtered.map((name) => ({ value: name }));
-  }, [knownNames, query]);
+        : knownNames.filter(
+            (name) =>
+              name.toLowerCase().startsWith(lowerQuery) ||
+              // Typing a cell name ("AINL") finds its lineage name too.
+              (displayNames[name]?.toLowerCase().startsWith(lowerQuery) ?? false),
+          );
+    return filtered.map((name) => ({
+      value: name,
+      label: nameWithDisplayName(name, displayNames),
+    }));
+  }, [knownNames, displayNames, query]);
 
   const matches = useMemo(() => {
     let filtered = allRows;

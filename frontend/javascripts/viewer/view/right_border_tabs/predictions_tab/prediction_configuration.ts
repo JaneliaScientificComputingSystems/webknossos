@@ -26,6 +26,7 @@ import { waitUntilRebaseFinished } from "viewer/model/helpers/bounding_box_creat
 import Store from "viewer/store";
 import {
   getTreeIdentity,
+  type IncomingCandidate,
   withConfirmedIdentity,
   withMergedCandidates,
 } from "viewer/view/right_border_tabs/neuron_identity_tab/neuron_identity_metadata";
@@ -42,7 +43,6 @@ import {
 } from "viewer/view/right_border_tabs/predictions_tab/nuclear_prediction_client";
 import {
   getReferenceDatasets,
-  type NodePredictionPayload,
   type PredictionServiceInputNode,
   type PredictRequestPayload,
   type PredictResponsePayload,
@@ -367,7 +367,9 @@ export function usePredictionConfigurationState() {
   // collab-restricted and this feature does no collaborative tree creation.
   const writeMergedCandidates = (
     source: string,
-    predictions: NodePredictionPayload[],
+    // Wider than the contactome service's NodePredictionPayload so nuclear
+    // candidates can carry their display names through to the metadata.
+    predictions: { segment_id: number; candidates: IncomingCandidate[] }[],
     // Seeds (ground-truth assignments, as opposed to a model's guesses) are
     // auto-confirmed rather than left for the user to click — but only when
     // unambiguous: a prediction with more than one candidate name isn't a
