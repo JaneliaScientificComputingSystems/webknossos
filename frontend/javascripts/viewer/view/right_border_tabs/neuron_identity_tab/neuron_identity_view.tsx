@@ -133,6 +133,11 @@ function colorForName(name: string): { background: string; color: string } {
   };
 }
 
+/** Short display label for a source: drops the "prediction:" / "prediction:nuclear:" prefix so the dataset or embryo/timepoint is what's visible. The full source stays in hover titles. */
+function sourceLabel(source: string): string {
+  return source.replace(/^prediction:(nuclear:)?/, "");
+}
+
 /** All sources with a score for ANY candidate of this tree — the denominator for averageScore. */
 function allSourcesFor(candidates: CandidateScores[]): string[] {
   const sources = new Set<string>();
@@ -427,7 +432,7 @@ const IdentityListItem = memo(function IdentityListItem({
                 ellipsis
                 title={source}
               >
-                {source}
+                {sourceLabel(source)}
               </Text>
               <div
                 style={{
@@ -683,7 +688,7 @@ const SearchByNameView = memo(function SearchByNameView({
                     onChange={(event) => onToggleSource(source, event.target.checked)}
                     style={{ fontSize: 12, marginInlineStart: 0 }}
                   >
-                    {source}
+                    <span title={source}>{sourceLabel(source)}</span>
                   </Checkbox>
                 ))}
               </div>
