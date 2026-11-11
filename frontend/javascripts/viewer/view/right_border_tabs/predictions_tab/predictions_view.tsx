@@ -8,13 +8,15 @@ import {
   Radio,
   Tag,
   Tooltip,
+  TreeSelect,
   Typography,
   Upload,
 } from "antd";
 import type { UploadChangeParam, UploadFile } from "antd/es/upload";
 import { readFileAsText } from "libs/read_file";
 import Toast from "libs/toast";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import type { TreeGroup } from "viewer/model/types/tree_types";
 import {
   countDistinctNeurons,
   parseContactProfile,
@@ -22,8 +24,19 @@ import {
 import { parseOfflinePredictions } from "viewer/view/right_border_tabs/predictions_tab/offline_predictions";
 import { atlasKeyFor } from "viewer/view/right_border_tabs/predictions_tab/prediction_configuration";
 import { usePredictionConfiguration } from "viewer/view/right_border_tabs/predictions_tab/prediction_configuration_context";
+import { MISSING_GROUP_ID } from "viewer/view/right_border_tabs/shared/tree_hierarchy_view_helpers";
 
 const { Text } = Typography;
+
+type FolderTreeNode = { value: number; title: string; children?: FolderTreeNode[] };
+
+function toFolderTreeData(groups: TreeGroup[]): FolderTreeNode[] {
+  return groups.map((group) => ({
+    value: group.groupId,
+    title: group.name,
+    children: toFolderTreeData(group.children),
+  }));
+}
 
 export default function PredictionsView() {
   const {
@@ -45,12 +58,27 @@ export default function PredictionsView() {
     toggleAtlas,
     nTrials,
     setNTrials,
+    nuclearGroupId,
+    setNuclearGroupId,
+    treeGroups,
+    nuclearScopedTreeCount,
     registeredAtlases,
     registeredAtlasesStatus,
     writeMergedCandidates,
   } = usePredictionConfiguration();
 
   const [newIgnoredName, setNewIgnoredName] = useState("");
+
+  const folderTreeData: FolderTreeNode[] = useMemo(
+    () => [
+      {
+        value: MISSING_GROUP_ID,
+        title: "All trees (root)",
+        children: toFolderTreeData(treeGroups ?? []),
+      },
+    ],
+    [treeGroups],
+  );
 
   const handleContactFileChange = async (info: UploadChangeParam<UploadFile<any>>) => {
     const file = info.fileList[info.fileList.length - 1]?.originFileObj;
@@ -255,6 +283,25 @@ export default function PredictionsView() {
               })}
             </div>
           )}
+          <Text strong style={{ display: "block", marginBottom: 4 }}>
+            Trees to predict
+          </Text>
+          <Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
+            Only trees in this folder, including its subfolders, are sent. Defaults to the root,
+            i.e. the whole annotation.
+          </Text>
+          <TreeSelect
+            size="small"
+            style={{ width: "100%", marginBottom: 4 }}
+            treeData={folderTreeData}
+            value={nuclearGroupId}
+            onChange={(value: number) => setNuclearGroupId(value)}
+            treeDefaultExpandAll
+            placeholder="Select folder…"
+          />
+          <Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
+            {nuclearScopedTreeCount} tree(s) in scope.
+          </Text>
           <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
             <Tooltip title="Number of perturbed matching trials to ensemble into each tree's confidence score.">
               <Text style={{ fontSize: 12, flex: "0 0 auto" }}>Trials:</Text>

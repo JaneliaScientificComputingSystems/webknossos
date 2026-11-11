@@ -12,7 +12,7 @@
 
 import { useWkSelector } from "libs/react_hooks";
 import Toast from "libs/toast";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useDispatch } from "react-redux";
 import { batchActions } from "redux-batched-actions";
 import { getSkeletonTracing } from "viewer/model/accessors/skeletontracing_accessor";
@@ -53,6 +53,10 @@ import {
   type PredictionMode,
   parseConfigFromDescription,
 } from "viewer/view/right_border_tabs/predictions_tab/prediction_config_persistence";
+import {
+  getGroupByIdWithSubgroups,
+  MISSING_GROUP_ID,
+} from "viewer/view/right_border_tabs/shared/tree_hierarchy_view_helpers";
 
 // Keyed by reference dataset, not a single shared constant, so predictions
 // against different Witvliet stages are kept as parallel scores per name
@@ -120,6 +124,31 @@ export function usePredictionConfigurationState() {
   // confidence scores.
   const [selectedAtlasKeys, setSelectedAtlasKeys] = useState<Set<string>>(new Set());
   const [nTrials, setNTrials] = useState(20);
+  // Which tree group (folder) supplies the nuclear-mode query targets.
+  // MISSING_GROUP_ID is the root: every tree in the annotation.
+  const [nuclearGroupId, setNuclearGroupId] = useState<number>(MISSING_GROUP_ID);
+  const treeGroups = skeletonTracing?.treeGroups;
+  // A folder deleted since it was selected (or persisted) falls back to the root.
+  const effectiveNuclearGroupId = useMemo(() => {
+    if (nuclearGroupId === MISSING_GROUP_ID || treeGroups == null) {
+      return MISSING_GROUP_ID;
+    }
+    return getGroupByIdWithSubgroups(treeGroups, nuclearGroupId).length > 0
+      ? nuclearGroupId
+      : MISSING_GROUP_ID;
+  }, [nuclearGroupId, treeGroups]);
+  // Trees in the selected folder and its subfolders; the whole map for the root.
+  const nuclearScopedTrees = useMemo(() => {
+    if (trees == null) {
+      return [];
+    }
+    const allTrees = Array.from(trees.values());
+    if (effectiveNuclearGroupId === MISSING_GROUP_ID || treeGroups == null) {
+      return allTrees;
+    }
+    const groupIdsInScope = new Set(getGroupByIdWithSubgroups(treeGroups, effectiveNuclearGroupId));
+    return allTrees.filter((tree) => tree.groupId != null && groupIdsInScope.has(tree.groupId));
+  }, [trees, treeGroups, effectiveNuclearGroupId]);
   const [registeredAtlases, setRegisteredAtlases] = useState<RegisteredAtlas[]>([]);
   const [registeredAtlasesStatus, setRegisteredAtlasesStatus] = useState<
     "loading" | "loaded" | "failed"
@@ -243,6 +272,7 @@ export function usePredictionConfigurationState() {
         setSelectedReferenceDatasets(new Set(persisted.selectedReferenceDatasets));
       }
       setSelectedAtlasKeys(new Set(persisted.selectedAtlasKeys));
+      setNuclearGroupId(persisted.nuclearGroupId);
       setNTrials(persisted.nTrials);
     }
     setHasLoadedPersistedConfig(true);
@@ -266,6 +296,7 @@ export function usePredictionConfigurationState() {
         lastRunConfirmedNames != null ? Array.from(lastRunConfirmedNames) : null,
       selectedReferenceDatasets: Array.from(selectedReferenceDatasets),
       selectedAtlasKeys: Array.from(selectedAtlasKeys),
+      nuclearGroupId,
       nTrials,
     };
     latestConfigWriteId.current += 1;
@@ -297,6 +328,7 @@ export function usePredictionConfigurationState() {
     lastRunConfirmedNames,
     selectedReferenceDatasets,
     selectedAtlasKeys,
+    nuclearGroupId,
     nTrials,
     dispatch,
   ]);
@@ -424,7 +456,7 @@ export function usePredictionConfigurationState() {
 
   const canRunContactome =
     allowUpdate && contactEdges.length > 0 && selectedReferenceDatasets.size > 0;
-  const canRunNuclear = allowUpdate && selectedAtlasKeys.size > 0;
+  const canRunNuclear = allowUpdate && selectedAtlasKeys.size > 0 && nuclearScopedTrees.length > 0;
   const canRun = !isRunning && (predictionMode === "contactome" ? canRunContactome : canRunNuclear);
 
   const runContactome = async () => {
@@ -523,12 +555,13 @@ export function usePredictionConfigurationState() {
     if (trees == null || selectedAtlasKeys.size === 0) {
       return;
     }
-    // Every non-ignored tree in the skeleton is a query target — unlike the
+    // Every non-ignored tree in the selected folder (default: the root, i.e.
+    // the whole skeleton) is a query target — unlike the
     // contactome mode, there's no uploaded file defining which trees matter;
     // the nuclear service matches against whatever's actually in the
     // skeleton layer, using each tree's own node position. Built once since
     // it doesn't depend on which atlas is being matched against.
-    const requestNodes: NuclearInputNode[] = Array.from(trees.values())
+    const requestNodes: NuclearInputNode[] = nuclearScopedTrees
       .filter((tree) => !getTreeIdentity(tree).ignored)
       .map((tree) => {
         const node = tree.nodes.values().next().value;
@@ -638,6 +671,10 @@ export function usePredictionConfigurationState() {
     toggleAtlas,
     nTrials,
     setNTrials,
+    nuclearGroupId: effectiveNuclearGroupId,
+    setNuclearGroupId,
+    treeGroups,
+    nuclearScopedTreeCount: nuclearScopedTrees.length,
     registeredAtlases,
     registeredAtlasesStatus,
     isRunning,

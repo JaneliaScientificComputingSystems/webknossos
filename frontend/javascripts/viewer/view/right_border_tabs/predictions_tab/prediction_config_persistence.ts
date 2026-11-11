@@ -29,6 +29,8 @@ export type PersistedPredictionConfig = {
   selectedReferenceDatasets: string[];
   /** Nuclear-position reference atlases checked in the Configuration tab, encoded as "embryo|timepoint" strings (mirroring selectedReferenceDatasets's shape) — one prediction request is made per checked atlas, same as contactome's reference datasets. Serialized as an array (JSON has no Set type); callers convert to/from Set at the boundary. */
   selectedAtlasKeys: string[];
+  /** Tree group (folder) whose trees, including those in subfolders, are the nuclear-mode query targets. -1 (MISSING_GROUP_ID) is the root, i.e. every tree in the annotation. */
+  nuclearGroupId: number;
   nTrials: number;
 };
 
@@ -80,6 +82,7 @@ export function parseConfigFromDescription(description: string): PersistedPredic
       selectedAtlasKeys: Array.isArray(parsed.selectedAtlasKeys)
         ? parsed.selectedAtlasKeys.filter((key: unknown): key is string => typeof key === "string")
         : [],
+      nuclearGroupId: typeof parsed.nuclearGroupId === "number" ? parsed.nuclearGroupId : -1,
       nTrials: typeof parsed.nTrials === "number" ? parsed.nTrials : 20,
     };
   } catch (_exception) {
