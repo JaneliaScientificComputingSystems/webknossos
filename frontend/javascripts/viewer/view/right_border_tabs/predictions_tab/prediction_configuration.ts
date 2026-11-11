@@ -177,9 +177,16 @@ export function usePredictionConfigurationState() {
         }
         setReferenceDatasets(datasets);
         setReferenceDatasetsStatus("loaded");
-        setSelectedReferenceDatasets((current) =>
-          current.size > 0 ? current : new Set(datasets[0] != null ? [datasets[0]] : []),
-        );
+        // Drop saved selections the service no longer offers, or Run would
+        // request them and fail.
+        setSelectedReferenceDatasets((current) => {
+          const stillAvailable = new Set(
+            Array.from(current).filter((dataset) => datasets.includes(dataset)),
+          );
+          return stillAvailable.size > 0
+            ? stillAvailable
+            : new Set(datasets[0] != null ? [datasets[0]] : []);
+        });
       },
       () => {
         if (!cancelled) {
@@ -205,6 +212,13 @@ export function usePredictionConfigurationState() {
         }
         setRegisteredAtlases(atlases);
         setRegisteredAtlasesStatus("loaded");
+        // Drop saved selections the service no longer has registered (e.g.
+        // after an atlas set was replaced), or Run would request them and 400.
+        const registeredKeys = new Set(atlases.map((a) => atlasKeyFor(a.embryo, a.timepoint)));
+        setSelectedAtlasKeys((current) => {
+          const stillRegistered = Array.from(current).filter((key) => registeredKeys.has(key));
+          return stillRegistered.length === current.size ? current : new Set(stillRegistered);
+        });
       },
       () => {
         if (!cancelled) {
@@ -578,6 +592,11 @@ export function usePredictionConfigurationState() {
           is_confirmed: identity.confirmed != null,
         };
       });
+
+    if (requestNodes.length === 0) {
+      Toast.warning("No trees to predict: the skeleton has no non-ignored trees.");
+      return;
+    }
 
     // One request + one write per checked atlas, run in sequence rather
     // than in parallel — same reasoning as runContactome's loop: these all
