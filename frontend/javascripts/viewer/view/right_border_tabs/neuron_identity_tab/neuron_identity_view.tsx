@@ -40,6 +40,7 @@ import type { Tree } from "viewer/model/types/tree_types";
 import Store from "viewer/store";
 import { getContextMenuPositionFromEvent } from "viewer/view/context_menu/helpers";
 import { getNeuronDiagramUrl } from "viewer/view/right_border_tabs/predictions_tab/prediction_client";
+import { getUncheckedReferenceSources } from "viewer/view/right_border_tabs/predictions_tab/prediction_configuration";
 import {
   PredictionConfigurationProvider,
   usePredictionConfiguration,
@@ -889,6 +890,7 @@ function NeuronIdentityPanel() {
   // profile, selected reference datasets, isRunning) live in
   // PredictionConfigurationContext — shared, via that context, with
   // PredictionsView's own controls and the always-visible Run button below.
+  const predictionConfiguration = usePredictionConfiguration();
   const {
     predictionMode,
     ignoredNames,
@@ -900,7 +902,7 @@ function NeuronIdentityPanel() {
     canRun,
     run,
     lastRunConfirmedNames,
-  } = usePredictionConfiguration();
+  } = predictionConfiguration;
   // Sources (e.g. "prediction:adult", "morphology_scores") excluded from
   // display and from the cross-source average everywhere in this panel —
   // session-local like ignoredNames, not persisted. null means "not
@@ -924,15 +926,61 @@ function NeuronIdentityPanel() {
   );
   const activeTreeId = useWkSelector((state) => state.localSkeletonState.activeTreeId);
 
+  // Sources of references unchecked in the Configuration tab are dropped
+  // here, at the root of the row derivation, so they vanish immediately from
+  // the Matching scores list, every candidate display and the averages —
+  // their stored scores stay in tree metadata and reappear if re-checked.
+  const {
+    referenceDatasets,
+    referenceDatasetsStatus,
+    registeredAtlases,
+    registeredAtlasesStatus,
+  } = predictionConfiguration;
+  const uncheckedReferenceSources = useMemo(
+    () =>
+      getUncheckedReferenceSources({
+        referenceDatasets,
+        referenceDatasetsStatus,
+        selectedReferenceDatasets,
+        registeredAtlases,
+        registeredAtlasesStatus,
+        selectedAtlasKeys,
+      }),
+    [
+      referenceDatasets,
+      referenceDatasetsStatus,
+      selectedReferenceDatasets,
+      registeredAtlases,
+      registeredAtlasesStatus,
+      selectedAtlasKeys,
+    ],
+  );
+
   const unfilteredRows = useMemo<IdentityRow[]>(() => {
     if (trees == null) {
       return [];
     }
     return Array.from(trees.values()).map((tree) => {
-      const identity = getTreeIdentity(tree);
+      const fullIdentity = getTreeIdentity(tree);
+      const identity =
+        uncheckedReferenceSources.size === 0
+          ? fullIdentity
+          : {
+              ...fullIdentity,
+              candidates: fullIdentity.candidates
+                .map((candidate) => ({
+                  ...candidate,
+                  scoresBySource: Object.fromEntries(
+                    Object.entries(candidate.scoresBySource).filter(
+                      ([source]) => !uncheckedReferenceSources.has(source),
+                    ),
+                  ),
+                }))
+                .filter((candidate) => Object.keys(candidate.scoresBySource).length > 0),
+            };
       return { tree, identity, status: getIdentityStatus(identity) };
     });
-  }, [trees]);
+  }, [trees, uncheckedReferenceSources]);
 
   // Every source seen across all trees' candidates — the "Matching
   // scores" checkbox list's population. Derived from the unfiltered rows so

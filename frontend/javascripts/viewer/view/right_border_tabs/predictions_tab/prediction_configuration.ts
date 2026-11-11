@@ -364,6 +364,11 @@ export function usePredictionConfigurationState() {
     // written but unconfirmed for manual review.
     options?: { autoConfirm?: boolean },
   ): WriteResult => {
+    // Read from the store, not the render-closure `trees`: when several
+    // references are run in one loop, each iteration must see the metadata
+    // written by the previous one, or it re-merges onto stale metadata and
+    // overwrites the earlier reference's entry (only the last survives).
+    const trees = getSkeletonTracing(Store.getState().annotation)?.trees;
     if (trees == null) {
       return { written: 0, skippedMissingTreeCount: 0, confirmedCount: 0, skippedConfirmCount: 0 };
     }
@@ -690,6 +695,42 @@ export function usePredictionConfigurationState() {
 // instead of the later run silently overwriting the earlier one's score.
 function nuclearPredictionSourceFor(embryo: string, timepoint: number): string {
   return `prediction:nuclear:${embryo}:${timepoint}`;
+}
+
+/**
+ * Live-prediction sources (contactome datasets and nuclear atlases) whose
+ * reference is currently unchecked in the Configuration tab. Their stored
+ * scores stay in tree metadata but are hidden from the panel and averages.
+ * Empty until both reference lists have loaded, so nothing flickers away
+ * while the checked sets are still being populated.
+ */
+export function getUncheckedReferenceSources(
+  state: Pick<
+    PredictionConfigurationState,
+    | "referenceDatasets"
+    | "referenceDatasetsStatus"
+    | "selectedReferenceDatasets"
+    | "registeredAtlases"
+    | "registeredAtlasesStatus"
+    | "selectedAtlasKeys"
+  >,
+): Set<string> {
+  const unchecked = new Set<string>();
+  if (state.referenceDatasetsStatus === "loaded") {
+    for (const dataset of state.referenceDatasets) {
+      if (!state.selectedReferenceDatasets.has(dataset)) {
+        unchecked.add(predictionSourceFor(dataset));
+      }
+    }
+  }
+  if (state.registeredAtlasesStatus === "loaded") {
+    for (const { embryo, timepoint } of state.registeredAtlases) {
+      if (!state.selectedAtlasKeys.has(atlasKeyFor(embryo, timepoint))) {
+        unchecked.add(nuclearPredictionSourceFor(embryo, timepoint));
+      }
+    }
+  }
+  return unchecked;
 }
 
 function annotationDescriptionAtMount(): string {
