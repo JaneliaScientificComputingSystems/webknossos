@@ -20,6 +20,14 @@
  * static key added later risks colliding with an existing source name. A
  * later run from the same source overwrites only its own entry; other
  * sources' entries are untouched.
+ *
+ * Display names: a source may also supply a display name per candidate (the
+ * nuclear service sends the cell name for a lineage name, e.g. "AINL" for
+ * "ABalaaaalal"). Those live in ONE separate entry, `identity.displayNames`
+ * (a JSON {name: displayName} object), not as a third tuple element — builds
+ * that predate display names only accept 2-element tuples and would drop
+ * the candidates otherwise. Display names are not unique, so they are for
+ * showing next to a name only, never an identity key.
  */
 import type { MetadataEntryProto } from "types/api_types";
 import type { Tree } from "viewer/model/types/tree_types";
@@ -30,6 +38,7 @@ export const IdentityMetadataKeys = {
   confirmed: "identity.confirmed", // stringValue: user-chosen name
   predictedAt: "identity.predictedAt", // numberValue: timestamp (ms) of the most recent write
   ignored: "identity.ignored", // boolValue: true if marked "not a neuron" / excluded from matching
+  displayNames: "identity.displayNames", // stringValue: JSON {candidate name: display name}, only for names that have one
 } as const;
 
 export type CandidateScores = {
@@ -40,8 +49,17 @@ export type CandidateScores = {
 
 export type IdentityStatus = "predicted" | "confirmed" | "none";
 
+/** A candidate as a source hands it over; `display_name` keeps the nuclear service's wire-format spelling. */
+export type IncomingCandidate = {
+  name: string;
+  score: number;
+  display_name?: string | null;
+};
+
 export type TreeIdentity = {
   candidates: CandidateScores[];
+  /** Display name per candidate name, e.g. { ABalaaaalal: "AINL" } — only names that have one. Show it next to the name; never use it as a key. */
+  displayNames: Record<string, string>;
   confirmed: string | null;
   predictedAt: number | null;
   /** Marked "not a real cell" — excluded from live Run's prediction targets and hidden from Proofread IDs by default. */
@@ -89,6 +107,25 @@ function parseSourceCandidates(encoded: string | undefined): { name: string; sco
   }
 }
 
+function parseDisplayNames(encoded: string | undefined): Record<string, string> {
+  if (encoded == null) {
+    return {};
+  }
+  try {
+    const parsed: unknown = JSON.parse(encoded);
+    if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>).filter(
+        (pair): pair is [string, string] => typeof pair[1] === "string" && pair[1].length > 0,
+      ),
+    );
+  } catch (_exception) {
+    return {};
+  }
+}
+
 /** Derive the typed identity view-model from a tree's raw metadata. */
 export function getTreeIdentity(tree: Tree): TreeIdentity {
   const metadata = tree.metadata ?? [];
@@ -106,6 +143,9 @@ export function getTreeIdentity(tree: Tree): TreeIdentity {
   }
   return {
     candidates: Array.from(byName.values()),
+    displayNames: parseDisplayNames(
+      findEntry(metadata, IdentityMetadataKeys.displayNames)?.stringValue,
+    ),
     confirmed: findEntry(metadata, IdentityMetadataKeys.confirmed)?.stringValue ?? null,
     predictedAt: findEntry(metadata, IdentityMetadataKeys.predictedAt)?.numberValue ?? null,
     ignored: findEntry(metadata, IdentityMetadataKeys.ignored)?.boolValue ?? false,
@@ -167,11 +207,16 @@ export function withUnignored(metadata: MetadataEntryProto[]): MetadataEntryProt
  * score) pairs, sorted by score descending. Other sources' entries are left
  * untouched — a re-run from the same source supersedes only its own earlier
  * entry, never another source's.
+ *
+ * Display names the batch carries are merged into the tree's shared
+ * display-name entry: several sources (atlases) write to the same tree, so
+ * names from earlier writes are kept. A batch without any leaves that entry
+ * alone.
  */
 export function withMergedCandidates(
   metadata: MetadataEntryProto[],
   source: string,
-  newCandidates: { name: string; score: number }[],
+  newCandidates: IncomingCandidate[],
   predictedAt: number,
 ): MetadataEntryProto[] {
   const sorted = [...newCandidates]
@@ -182,5 +227,21 @@ export function withMergedCandidates(
     stringValue: JSON.stringify(sorted),
   });
   next = upsertEntry(next, { key: IdentityMetadataKeys.predictedAt, numberValue: predictedAt });
+  const newDisplayNames = Object.fromEntries(
+    newCandidates.flatMap((candidate): [string, string][] =>
+      candidate.display_name != null && candidate.display_name.length > 0
+        ? [[candidate.name, candidate.display_name]]
+        : [],
+    ),
+  );
+  if (Object.keys(newDisplayNames).length > 0) {
+    const existingDisplayNames = parseDisplayNames(
+      findEntry(metadata, IdentityMetadataKeys.displayNames)?.stringValue,
+    );
+    next = upsertEntry(next, {
+      key: IdentityMetadataKeys.displayNames,
+      stringValue: JSON.stringify({ ...existingDisplayNames, ...newDisplayNames }),
+    });
+  }
   return next;
 }

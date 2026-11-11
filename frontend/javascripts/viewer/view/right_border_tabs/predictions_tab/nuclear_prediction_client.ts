@@ -29,7 +29,10 @@ export type NuclearPredictRequestPayload = {
 };
 
 export type NuclearCandidate = {
+  /** The lineage name, e.g. "ABalaaaalal" — the identity key everywhere. */
   name: string;
+  /** The cell name to show next to the lineage, e.g. "AINL". Null when the lineage has none (progenitors, cell deaths); absent from services that predate the field. */
+  display_name?: string | null;
   score: number;
 };
 
