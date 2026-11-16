@@ -142,7 +142,11 @@ td.nowrap * {
   height: 100%;
 
   .child-1 {
-    overflow-y: auto;
+    // The first child is a virtualized tree that fills this pane and scrolls on its own. Its
+    // height is measured in whole pixels, so it can be a fraction of a pixel taller than the
+    // pane. With overflow-y: auto, Firefox turned that into a native scrollbar with nothing to
+    // scroll, lying on top of the tree's own scrollbar.
+    overflow: hidden;
     flex-grow: 1;
   }
 
