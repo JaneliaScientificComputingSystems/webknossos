@@ -17,6 +17,7 @@ exports[`Misc APIs (E2E)  > activeUser() 1`] = `
   "isEmailVerified": true,
   "isGuest": false,
   "isOrganizationOwner": true,
+  "isRejected": false,
   "isSuperUser": true,
   "isUnlisted": false,
   "lastActivity": "lastActivity",
