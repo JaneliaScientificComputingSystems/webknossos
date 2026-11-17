@@ -6,6 +6,7 @@ import {
   CloseOutlined,
   ThunderboltOutlined,
 } from "@ant-design/icons";
+import VirtualList from "@rc-component/virtual-list";
 import {
   AutoComplete,
   Button,
@@ -20,10 +21,12 @@ import {
   Tooltip,
   Typography,
 } from "antd";
+import FastTooltip from "components/fast_tooltip";
 import { useWkSelector } from "libs/react_hooks";
 import Toast from "libs/toast";
-import { type MouseEvent, memo, useCallback, useMemo, useState } from "react";
+import { type MouseEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDispatch } from "react-redux";
+import AutoSizer from "react-virtualized-auto-sizer";
 import { getTransformsForSkeletonLayer } from "viewer/model/accessors/dataset_layer_transformation_accessor";
 import { getSkeletonTracing } from "viewer/model/accessors/skeletontracing_accessor";
 import {
@@ -61,6 +64,13 @@ import {
 } from "./neuron_identity_metadata";
 
 const CONTEXT_MENU_OVERLAY_CLASS = "neuron-identity-context-menu-overlay";
+
+// Marks the horizontally scrollable candidate tag strips of a row, so the
+// virtualized list's wheel handling can leave sideways scrolling to them.
+const TAG_STRIP_ATTRIBUTE = "data-identity-tag-strip";
+// Only an initial estimate for the virtualized list; the real row heights
+// (they vary with the number of sources) are measured after rendering.
+const ESTIMATED_ROW_HEIGHT = 96;
 
 const { Text } = Typography;
 
@@ -194,9 +204,20 @@ function averageCandidateRanking(candidates: CandidateScores[]): { name: string;
 
 /** This tree's best candidate's cross-source average score (missing source = 0), for sorting with no name query. */
 function topCandidateAverageScore(identity: TreeIdentity): number {
+  const cachedScore = topCandidateScoreCache.get(identity);
+  if (cachedScore != null) {
+    return cachedScore;
+  }
   const top = averageCandidateRanking(identity.candidates)[0];
-  return top != null ? top.score : Number.NEGATIVE_INFINITY;
+  const topScore = top != null ? top.score : Number.NEGATIVE_INFINITY;
+  topCandidateScoreCache.set(identity, topScore);
+  return topScore;
 }
+
+// Identity objects are reused across renders for unchanged trees (see the row
+// caches in NeuronIdentityPanel), so the ranking is computed once per identity
+// rather than on every sort comparison.
+const topCandidateScoreCache = new WeakMap<TreeIdentity, number>();
 
 /** This tree's cross-source average score for ONE specific name, or -Infinity if it's not a candidate at all. */
 function averageScoreForName(identity: TreeIdentity, name: string): number {
@@ -294,8 +315,11 @@ const IdentityListItem = memo(function IdentityListItem({
     const nameColor = colorForName(name);
     const canInteract = allowUpdate && !isGreyedOut;
     return (
-      <Tooltip
+      // FastTooltip instead of antd's Tooltip: a row can hold hundreds of
+      // candidate tags, and an antd Tooltip per tag made rendering rows slow.
+      <FastTooltip
         key={name}
+        asChild
         title={
           isConfirmedElsewhere
             ? "Already confirmed on a different tree"
@@ -361,7 +385,7 @@ const IdentityListItem = memo(function IdentityListItem({
         >
           {nameWithDisplayName(name, identity.displayNames)} {formatScore(score)}
         </Tag>
-      </Tooltip>
+      </FastTooltip>
     );
   };
 
@@ -414,6 +438,7 @@ const IdentityListItem = memo(function IdentityListItem({
                 average
               </Text>
               <div
+                {...{ [TAG_STRIP_ATTRIBUTE]: true }}
                 style={{
                   display: "flex",
                   flexWrap: "nowrap",
@@ -444,6 +469,7 @@ const IdentityListItem = memo(function IdentityListItem({
                 {sourceLabel(source)}
               </Text>
               <div
+                {...{ [TAG_STRIP_ATTRIBUTE]: true }}
                 style={{
                   display: "flex",
                   flexWrap: "nowrap",
@@ -584,10 +610,13 @@ const SearchByNameView = memo(function SearchByNameView({
 
   const matches = useMemo(() => {
     let filtered = allRows;
+    // Scored once per row here instead of inside the sort comparator below.
+    const queryScoreByRow = new Map<IdentityRow, number>();
     if (trimmedQuery.length > 0) {
-      filtered = filtered.filter((row) =>
-        Number.isFinite(averageScoreForName(row.identity, trimmedQuery)),
-      );
+      for (const row of allRows) {
+        queryScoreByRow.set(row, averageScoreForName(row.identity, trimmedQuery));
+      }
+      filtered = filtered.filter((row) => Number.isFinite(queryScoreByRow.get(row)));
     }
     if (!includeConfirmedElsewhere) {
       filtered = filtered.filter(
@@ -610,10 +639,7 @@ const SearchByNameView = memo(function SearchByNameView({
     }
     return [...filtered].sort((a, b) => {
       if (trimmedQuery.length > 0) {
-        return (
-          averageScoreForName(b.identity, trimmedQuery) -
-          averageScoreForName(a.identity, trimmedQuery)
-        );
+        return (queryScoreByRow.get(b) ?? 0) - (queryScoreByRow.get(a) ?? 0);
       }
       if (sortBy === "id") {
         return a.tree.treeId - b.tree.treeId;
@@ -630,6 +656,31 @@ const SearchByNameView = memo(function SearchByNameView({
     enabledSources,
     sortBy,
   ]);
+
+  // The virtualized list handles wheel events itself and cancels their
+  // default action, which would also block sideways scrolling of a row's
+  // candidate tag strip. Intercept those gestures in the capture phase (i.e.
+  // before the list's own listener) and keep them away from the list, so the
+  // browser scrolls the strip natively.
+  const listWrapperRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const listWrapper = listWrapperRef.current;
+    if (listWrapper == null) {
+      return;
+    }
+    const keepSidewaysWheelFromList = (event: WheelEvent) => {
+      const isSidewaysGesture = event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY);
+      const isOverTagStrip =
+        event.target instanceof Element && event.target.closest(`[${TAG_STRIP_ATTRIBUTE}]`) != null;
+      if (isSidewaysGesture && isOverTagStrip) {
+        event.stopPropagation();
+      }
+    };
+    listWrapper.addEventListener("wheel", keepSidewaysWheelFromList, { capture: true });
+    return () => {
+      listWrapper.removeEventListener("wheel", keepSidewaysWheelFromList, { capture: true });
+    };
+  }, []);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -747,7 +798,7 @@ const SearchByNameView = memo(function SearchByNameView({
         )}
       </div>
 
-      <div style={{ flex: 1, overflowY: "auto" }}>
+      <div ref={listWrapperRef} style={{ flex: 1, minHeight: 0 }}>
         {matches.length === 0 ? (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
@@ -759,22 +810,44 @@ const SearchByNameView = memo(function SearchByNameView({
             style={{ marginTop: 40 }}
           />
         ) : (
-          matches.map((row) => (
-            <IdentityListItem
-              key={row.tree.treeId}
-              row={row}
-              allowUpdate={allowUpdate}
-              isActive={activeTreeId === row.tree.treeId}
-              highlightName={trimmedQuery.length > 0 ? trimmedQuery : undefined}
-              confirmedNames={confirmedNames}
-              ignoredNameSet={ignoredNameSet}
-              onGoTo={onGoTo}
-              onConfirm={onConfirm}
-              onUnconfirm={onUnconfirm}
-              onTagContextMenu={onTagContextMenu}
-              onRowContextMenu={onRowContextMenu}
-            />
-          ))
+          <AutoSizer disableWidth>
+            {({ height }) =>
+              // While this sub-tab is hidden the height is 0, which would turn
+              // the virtualization off and render every row.
+              height > 0 ? (
+                // Only the rows in view are rendered; rendering a row for
+                // every tree made the whole tab slow in large annotations.
+                <VirtualList
+                  data={matches}
+                  height={height}
+                  itemHeight={ESTIMATED_ROW_HEIGHT}
+                  itemKey={(row) => row.tree.treeId}
+                  // The default hides the scrollbar after 3 seconds, so that
+                  // it cannot be grabbed for dragging.
+                  showScrollBar
+                  styles={{ verticalScrollBarThumb: { background: "rgba(128, 128, 128, 0.6)" } }}
+                >
+                  {(row) => (
+                    <div>
+                      <IdentityListItem
+                        row={row}
+                        allowUpdate={allowUpdate}
+                        isActive={activeTreeId === row.tree.treeId}
+                        highlightName={trimmedQuery.length > 0 ? trimmedQuery : undefined}
+                        confirmedNames={confirmedNames}
+                        ignoredNameSet={ignoredNameSet}
+                        onGoTo={onGoTo}
+                        onConfirm={onConfirm}
+                        onUnconfirm={onUnconfirm}
+                        onTagContextMenu={onTagContextMenu}
+                        onRowContextMenu={onRowContextMenu}
+                      />
+                    </div>
+                  )}
+                </VirtualList>
+              ) : null
+            }
+          </AutoSizer>
         )}
       </div>
     </div>
@@ -962,12 +1035,8 @@ function NeuronIdentityPanel() {
   // here, at the root of the row derivation, so they vanish immediately from
   // the Matching scores list, every candidate display and the averages —
   // their stored scores stay in tree metadata and reappear if re-checked.
-  const {
-    referenceDatasets,
-    referenceDatasetsStatus,
-    registeredAtlases,
-    registeredAtlasesStatus,
-  } = predictionConfiguration;
+  const { referenceDatasets, referenceDatasetsStatus, registeredAtlases, registeredAtlasesStatus } =
+    predictionConfiguration;
   const uncheckedReferenceSources = useMemo(
     () =>
       getUncheckedReferenceSources({
@@ -988,11 +1057,27 @@ function NeuronIdentityPanel() {
     ],
   );
 
+  // A tree object stays the same as long as the tree is unchanged, so its row
+  // is built once and reused. Without this, any skeleton edit rebuilt every
+  // row (re-parsing all trees' metadata) and re-rendered the whole list. The
+  // cache only holds for one set of unchecked sources.
+  const unfilteredRowCacheRef = useRef<{
+    uncheckedReferenceSources: Set<string>;
+    rowByTree: WeakMap<Tree, IdentityRow>;
+  } | null>(null);
   const unfilteredRows = useMemo<IdentityRow[]>(() => {
     if (trees == null) {
       return [];
     }
+    if (unfilteredRowCacheRef.current?.uncheckedReferenceSources !== uncheckedReferenceSources) {
+      unfilteredRowCacheRef.current = { uncheckedReferenceSources, rowByTree: new WeakMap() };
+    }
+    const { rowByTree } = unfilteredRowCacheRef.current;
     return Array.from(trees.values()).map((tree) => {
+      const cachedRow = rowByTree.get(tree);
+      if (cachedRow != null) {
+        return cachedRow;
+      }
       const fullIdentity = getTreeIdentity(tree);
       const identity =
         uncheckedReferenceSources.size === 0
@@ -1010,7 +1095,9 @@ function NeuronIdentityPanel() {
                 }))
                 .filter((candidate) => Object.keys(candidate.scoresBySource).length > 0),
             };
-      return { tree, identity, status: getIdentityStatus(identity) };
+      const row: IdentityRow = { tree, identity, status: getIdentityStatus(identity) };
+      rowByTree.set(tree, row);
+      return row;
     });
   }, [trees, uncheckedReferenceSources]);
 
@@ -1047,11 +1134,24 @@ function NeuronIdentityPanel() {
   // — once, at the top of the panel — so every consumer downstream (Current
   // Tree, Search by Name, Confirmed IDs, the context menu) automatically
   // sees only enabled sources without re-deriving this filter itself.
+  const filteredRowCacheRef = useRef<{
+    disabledSources: Set<string>;
+    filteredRowByRow: WeakMap<IdentityRow, IdentityRow>;
+  } | null>(null);
   const allRows = useMemo<IdentityRow[]>(() => {
     if (disabledSources.size === 0) {
       return unfilteredRows;
     }
+    // Same reuse as for unfilteredRows, valid for one set of disabled sources.
+    if (filteredRowCacheRef.current?.disabledSources !== disabledSources) {
+      filteredRowCacheRef.current = { disabledSources, filteredRowByRow: new WeakMap() };
+    }
+    const { filteredRowByRow } = filteredRowCacheRef.current;
     return unfilteredRows.map((row) => {
+      const cachedRow = filteredRowByRow.get(row);
+      if (cachedRow != null) {
+        return cachedRow;
+      }
       const candidates = row.identity.candidates
         .map((candidate) => {
           const scoresBySource = Object.fromEntries(
@@ -1063,9 +1163,15 @@ function NeuronIdentityPanel() {
         })
         .filter((candidate) => Object.keys(candidate.scoresBySource).length > 0);
       const identity = { ...row.identity, candidates };
-      return { ...row, identity, status: getIdentityStatus(identity) };
+      const filteredRow: IdentityRow = { ...row, identity, status: getIdentityStatus(identity) };
+      filteredRowByRow.set(row, filteredRow);
+      return filteredRow;
     });
   }, [unfilteredRows, disabledSources]);
+  // Lets callbacks read the current rows without being re-created (and
+  // thereby re-rendering every list row) whenever the rows change.
+  const allRowsRef = useRef(allRows);
+  allRowsRef.current = allRows;
 
   // Typing directly into Search by Name's box also populates the diagram
   // section once the query exactly matches a known candidate name (but
@@ -1097,6 +1203,7 @@ function NeuronIdentityPanel() {
   // Run — lets the Confirmed IDs box show "N new seeds, M removed" and
   // highlight newly-confirmed tags, so it's obvious when predictions are
   // stale relative to the confirmed set.
+  const confirmedNamesRef = useRef<Set<string>>(new Set());
   const currentConfirmedNames = useMemo(() => {
     const names = new Set<string>();
     for (const row of allRows) {
@@ -1104,6 +1211,16 @@ function NeuronIdentityPanel() {
         names.add(row.identity.confirmed);
       }
     }
+    // Keep handing out the previous Set while the names are unchanged: it is a
+    // prop of every list row, and a new Set would re-render all of them.
+    const previousNames = confirmedNamesRef.current;
+    if (
+      previousNames.size === names.size &&
+      Array.from(names).every((name) => previousNames.has(name))
+    ) {
+      return previousNames;
+    }
+    confirmedNamesRef.current = names;
     return names;
   }, [allRows]);
   const confirmedNamesDiff = useMemo(() => {
@@ -1164,7 +1281,7 @@ function NeuronIdentityPanel() {
 
   const handleConfirm = useCallback(
     (tree: Tree, name: string) => {
-      const conflictingRow = allRows.find(
+      const conflictingRow = allRowsRef.current.find(
         (row) => row.tree.treeId !== tree.treeId && row.identity.confirmed === name,
       );
       if (conflictingRow != null) {
@@ -1178,7 +1295,7 @@ function NeuronIdentityPanel() {
         setTreeMetadataAction(withConfirmedIdentity(tree.metadata ?? [], name), tree.treeId),
       );
     },
-    [allRows, dispatch],
+    [dispatch],
   );
 
   const handleGoTo = useCallback(

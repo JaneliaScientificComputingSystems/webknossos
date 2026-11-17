@@ -169,6 +169,15 @@ label.ant-checkbox-wrapper {
   }
 }
 
+// Virtualized Ant <Tree> components draw their own scrollbar, which is hidden (via an inline
+// visibility style) 3 seconds after the last scroll and only reappears on the next scroll or
+// when the mouse re-enters the list. While hidden it cannot be grabbed for dragging, and
+// <Tree> offers no prop to change this. Therefore, always keep it visible. It is only
+// rendered when the list content overflows.
+.ant-tree-list-scrollbar {
+  visibility: visible !important;
+}
+
 .ant-tree-directory .ant-tree-title {
   // Make the directory tree element full-width. The folder icon is rendered inside the title
   // itself (see folder_tree.tsx), so no extra width needs to be reserved for it.
